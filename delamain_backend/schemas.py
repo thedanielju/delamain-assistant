@@ -21,11 +21,13 @@ class ConversationCreate(BaseModel):
     context_mode: ContextMode = "normal"
     model_route: str | None = None
     incognito_route: bool = False
+    folder_id: str | None = None
 
 
 class ConversationUpdate(BaseModel):
     title: str | None = None
     archived: bool | None = None
+    folder_id: str | None = None
 
 
 class PromptSubmit(BaseModel):
@@ -60,6 +62,22 @@ class ContextFilePatch(BaseModel):
     conversation_id: str | None = None
 
 
+class FolderCreate(BaseModel):
+    name: str = Field(min_length=1)
+    parent_id: str | None = None
+
+
+class FolderUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    parent_id: str | None = None
+
+
+class PermissionResolve(BaseModel):
+    decision: str
+    note: str | None = None
+    resolver: str | None = None
+
+
 class ConversationOut(BaseModel):
     id: str
     title: str | None
@@ -67,6 +85,7 @@ class ConversationOut(BaseModel):
     model_route: str | None
     incognito_route: bool
     sensitive_unlocked: bool
+    folder_id: str | None = None
     archived: bool
     created_at: str
     updated_at: str
@@ -104,4 +123,5 @@ class HealthOut(BaseModel):
     sqlite: dict[str, Any]
     litellm: dict[str, Any]
     config: dict[str, Any]
+    budget: dict[str, Any] | None = None
     helpers: dict[str, Any]

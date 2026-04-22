@@ -9,17 +9,22 @@ from delamain_backend.db import Database
 SETTINGS_DEFAULTS: dict[str, Any] = {
     "context_mode": "normal",
     "title_generation_enabled": True,
+    "copilot_budget_hard_override_enabled": False,
 }
 SETTINGS_KEYS = set(SETTINGS_DEFAULTS) | {"model_default"}
+DEFAULT_DISABLED_TOOLS = {"run_shell"}
 
 
 async def disabled_tools(db: Database) -> set[str]:
     rows = await db.fetchall("SELECT key, value FROM settings WHERE key LIKE 'tool.enabled.%'")
-    disabled: set[str] = set()
+    disabled: set[str] = set(DEFAULT_DISABLED_TOOLS)
     for row in rows:
+        tool_name = row["key"].removeprefix("tool.enabled.")
         enabled = json.loads(row["value"])
         if enabled is False:
-            disabled.add(row["key"].removeprefix("tool.enabled."))
+            disabled.add(tool_name)
+        elif enabled is True:
+            disabled.discard(tool_name)
     return disabled
 
 

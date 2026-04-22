@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from delamain_backend.api.audit import audit_event
 from delamain_backend.api.deps import get_bus, get_config, get_db
+from delamain_backend.budget import copilot_budget_status
 from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
 from delamain_backend.events import EventBus
@@ -59,6 +60,14 @@ async def get_model_settings(config: AppConfig = Depends(get_config)):
         "fallback_cheap": config.models.fallback_cheap,
         "paid_fallback": config.models.paid_fallback,
     }
+
+
+@router.get("/settings/budget")
+async def get_budget_settings(
+    config: AppConfig = Depends(get_config),
+    db: Database = Depends(get_db),
+):
+    return {"copilot_budget": await copilot_budget_status(config, db)}
 
 
 @router.get("/settings/tools")
@@ -118,6 +127,11 @@ def _validate_setting(config: AppConfig, key: str, value: Any) -> None:
         raise HTTPException(status_code=400, detail="context_mode must be normal or blank_slate")
     if key == "title_generation_enabled" and not isinstance(value, bool):
         raise HTTPException(status_code=400, detail="title_generation_enabled must be boolean")
+    if key == "copilot_budget_hard_override_enabled" and not isinstance(value, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="copilot_budget_hard_override_enabled must be boolean",
+        )
     if key == "model_default" and value not in {
         config.models.default,
         config.models.fallback_high_volume,

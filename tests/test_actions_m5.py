@@ -379,12 +379,13 @@ async def test_action_runner_rejects_output_root_under_synced_roots(test_config)
         server=test_config.server,
         database=test_config.database.__class__(
             path=test_config.paths.llm_workspace / "conversations.sqlite"
-        ),
-        paths=test_config.paths,
-        models=test_config.models,
-        tools=test_config.tools,
-        runtime=test_config.runtime,
-        auth=test_config.auth,
+            ),
+            paths=test_config.paths,
+            models=test_config.models,
+            copilot_budget=test_config.copilot_budget,
+            tools=test_config.tools,
+            runtime=test_config.runtime,
+            auth=test_config.auth,
         maintenance=test_config.maintenance,
     )
     db = Database(test_config.database.path)

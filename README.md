@@ -22,6 +22,7 @@ Implemented through M8 worker session scaffold:
 - M8 worker session scaffold: tmux-backed worker lifecycle, worker type registry, start/stop/kill/capture endpoints, DB persistence, conversation-scoped audit events.
 - Post-M8 hardening: vault-index-backed `search_vault`, streaming-window `read_text_file`, SSE stale-subscriber cleanup, temp-table-free healthcheck, cached worker manager/registry, and symlink-tolerant owned artifact reads.
 - Operational hardening: startup worker reconciliation, startup retention cleanup for action outputs/context backups, and Cloudflare Access JWT enforcement for deployed API traffic.
+- Frontend contract support: conversation folders, usage aggregation, Claude/Codex subscription-auth probes, OpenRouter credits, read-only Syncthing status/conflict endpoints, permission approval REST/SSE shapes, and machine-readable stale-auth responses.
 
 ## Service
 
@@ -100,6 +101,14 @@ POST   /api/actions/{action_id}
 GET    /api/action-runs/{action_run_id}
 GET    /api/action-runs/{action_run_id}/stdout
 GET    /api/action-runs/{action_run_id}/stderr
+GET    /api/usage
+GET    /api/usage/subscriptions
+GET    /api/syncthing/summary
+GET    /api/syncthing/conflicts
+GET    /api/folders
+POST   /api/folders
+PATCH  /api/folders/{folder_id}
+DELETE /api/folders/{folder_id}
 GET    /api/conversations
 POST   /api/conversations
 GET    /api/conversations/{conversation_id}
@@ -112,13 +121,16 @@ POST   /api/conversations/{conversation_id}/messages
 GET    /api/conversations/{conversation_id}/action-runs
 GET    /api/conversations/{conversation_id}/runs
 GET    /api/runs/{run_id}
+GET    /api/runs/{run_id}/permissions
 POST   /api/runs/{run_id}/cancel
 POST   /api/runs/{run_id}/retry
+POST   /api/permissions/{permission_id}/resolve
 GET    /api/conversations/{conversation_id}/stream
 GET    /api/runs/{run_id}/stream
 GET    /api/settings
 PATCH  /api/settings
 GET    /api/settings/models
+GET    /api/settings/budget
 GET    /api/settings/tools
 PATCH  /api/settings/tools/{tool_name}
 GET    /api/context/current
@@ -170,9 +182,13 @@ model.usage
 audit
 error
 run.completed
+conversation.title
+permission.requested
+permission.resolved
 ```
 
 SSE replay supports `Last-Event-ID`.
+Tool events include `assistant_message_id` so frontend clients can attach tool cards to the correct assistant message even when a run starts with tool calls before assistant text.
 
 Model calls:
 
@@ -192,11 +208,13 @@ Filesystem/Sensitive policy:
 - Sensitive unlock, lock, allowed access, and denied access attempts emit `audit` events.
 - The model cannot unlock Sensitive by tool call.
 - `.env`, key/token/credential-like files, Syncthing config, private keys, and obvious binary/rich files are blocked.
-- Implemented read-only tools: `read_text_file`, `list_directory`, `search_vault`.
+- Implemented filesystem/shell tools: `read_text_file`, `list_directory`, `search_vault`, guarded `patch_text_file`, and guarded `run_shell`.
 - `read_text_file` reads only the configured output window plus one byte and reports full file size from `stat()`.
 - `search_vault` uses `delamain-vault-index query <term> --json` when available, filters returned paths through backend path policy, and falls back to direct scanning only if the helper/index path is unavailable.
+- `patch_text_file` requires one exact preimage match in an allowed text file and writes a runtime backup outside Syncthing before replacing content. It is enabled by default; Sensitive files require the conversation's Sensitive unlock.
+- `run_shell` accepts structured `argv` plus allowed `cwd`, rejects shell `-c` command strings, uses a minimal environment, caps output, enforces timeout, and denies Sensitive cwd/argv targets. It is disabled by default through tool settings.
 - Implemented health tool: `get_health_status`.
-- `write_text_patch` is intentionally not implemented yet.
+- Broad `write_file`, `create_file`, and arbitrary overwrite remain intentionally unimplemented.
 
 Quick actions:
 
@@ -218,6 +236,10 @@ Quick actions:
   - `vault_index.status`
   - `vault_index.build`
   - `sync_guard.status`
+  - `subscription.codex_status`
+  - `subscription.claude_status`
+  - `winpc.subscription_codex_status`
+  - `winpc.subscription_claude_status`
   - `winpc.hostname`
   - `winpc.date`
 
@@ -225,8 +247,12 @@ Settings:
 
 - Settings are persisted in SQLite.
 - `GET /api/settings` returns supported runtime settings.
-- `PATCH /api/settings` currently accepts `context_mode`, `title_generation_enabled`, and `model_default`.
+- `PATCH /api/settings` currently accepts `context_mode`, `title_generation_enabled`, `model_default`, and `copilot_budget_hard_override_enabled`.
 - `GET /api/settings/models` exposes configured model routes and route families.
+- `GET /api/settings/budget` exposes approximate current-month Copilot request tracking from completed `github_copilot/*` model calls, plus soft/hard threshold status and whether the hard-threshold override is enabled.
+- Copilot budget hard threshold enforcement skips Copilot routes and falls back to the configured paid route unless `copilot_budget_hard_override_enabled` is true. Soft threshold emits audit only.
+- `GET /api/usage` exposes Copilot budget, completed call counts for Claude/Codex/OpenRouter, OpenRouter credits when `OPENROUTER_API_KEY` is configured, Anthropic organization cost reporting when `ANTHROPIC_ADMIN_API_KEY` is configured, OpenAI organization cost reporting when `OPENAI_ADMIN_API_KEY` or `OPENAI_API_KEY` is configured, and cached Claude/Codex CLI subscription-auth probes.
+- `GET /api/usage/subscriptions` returns only the cached CLI subscription-auth probes and accepts `?refresh=true`.
 - `GET /api/settings/tools` exposes tool names and enabled state.
 - `PATCH /api/settings/tools/{tool_name}` enables or disables a backend tool.
 - Disabled tools are omitted from model tool schemas and are denied if called in a tool loop.
@@ -244,19 +270,20 @@ Context files:
 
 Workers:
 
-- Workers are named tmux sessions on serrano, managed by the backend.
-- `GET /api/workers/types` lists available worker types: `opencode`, `claude_code`, `shell`.
+- Workers are named tmux sessions managed by the backend.
+- `GET /api/workers/types` lists available worker types: `opencode`, `claude_code`, `shell`, and `winpc_shell`.
 - `POST /api/workers` starts a new worker session; returns immediately with worker metadata.
 - `GET /api/workers` lists all workers; filterable by `?status=` or `?conversation_id=`.
 - `GET /api/workers/{worker_id}` returns worker metadata; `?refresh=true` checks tmux liveness.
 - `POST /api/workers/{worker_id}/stop` sends Ctrl-C then `exit` to gracefully stop.
 - `DELETE /api/workers/{worker_id}` kills the tmux session immediately.
 - `GET /api/workers/{worker_id}/output?lines=N` captures the last N lines from the tmux pane.
-- Worker tmux socket: `/home/danielju/.local/share/delamain/workers.sock` (separate from the ttyd socket).
+- Serrano worker tmux socket: `/home/danielju/.local/share/delamain/workers.sock` (separate from the ttyd socket).
+- `winpc_shell` starts/captures/stops/kills a WSL tmux session over `ssh winpc` with WSL cwd `/home/daniel`.
 - Worker records persist in SQLite with status, type, host, tmux session/socket, conversation association, and timestamps.
 - Worker start/stop/kill emit `audit` events when a `conversation_id` is supplied.
 - Duplicate worker names are rejected while a worker with that name is running.
-- Only `serrano` host workers are supported initially; `winpc` workers are a future extension.
+- Serrano workers use local tmux; `winpc_shell` uses the SSH/WSL tmux adapter.
 - Worker manager and worker type registry are cached for the app lifespan.
 - Backend startup reconciles persisted `running`/`starting`/`stopping` workers against live tmux sessions and marks dead sessions `stopped`.
 

@@ -80,6 +80,35 @@ def test_sensitive_lock_unlock_endpoints_are_explicit_and_audited(test_config):
     assert actions == ["sensitive.unlocked", "sensitive.locked"]
 
 
+def test_first_prompt_generates_deterministic_title(test_config):
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        submitted = client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "check winpc gpu status and summarize it"},
+        )
+        assert submitted.status_code == 202
+        conversation = client.get(f"/api/conversations/{conversation_id}").json()
+        assert conversation["title"] == "check winpc gpu status and summarize it"
+
+
+def test_persisted_model_default_used_for_new_runs(test_config):
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        assert client.patch(
+            "/api/settings",
+            json={"values": {"model_default": test_config.models.fallback_high_volume}},
+        ).status_code == 200
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        run_id = client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "hello"},
+        ).json()["run_id"]
+        run = client.get(f"/api/runs/{run_id}").json()
+        assert run["model_route"] == test_config.models.fallback_high_volume
+
+
 def _wait_for_run(client: TestClient, run_id: str) -> dict:
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:

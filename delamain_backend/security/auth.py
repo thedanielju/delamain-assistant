@@ -5,6 +5,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import jwt
 from fastapi import Request
@@ -100,17 +101,27 @@ def install_auth_middleware(app, validator: CloudflareAccessValidator) -> None:
             )
         token = request.headers.get("cf-access-jwt-assertion")
         if not token:
-            return _auth_response("Missing Cloudflare Access JWT")
+            return _auth_response("Missing Cloudflare Access JWT", request)
         try:
             identity = validator.validate(token)
         except (AuthError, InvalidTokenError) as exc:
-            return _auth_response(str(exc))
+            return _auth_response(str(exc), request)
         request.state.auth_identity = identity
         return await call_next(request)
 
 
-def _auth_response(message: str) -> JSONResponse:
+def _auth_response(message: str, request: Request) -> JSONResponse:
+    issuer = request.app.state.config.auth.issuer
+    redirect_url = None
+    if issuer:
+        redirect_url = f"{issuer}/cdn-cgi/access/login?redirect_url={quote(str(request.url), safe='')}"
     return JSONResponse(
         status_code=401,
-        content={"detail": {"code": "AUTH_REQUIRED", "message": message}},
+        content={
+            "detail": {
+                "code": "auth_required",
+                "message": message,
+                "redirect_url": redirect_url,
+            }
+        },
     )

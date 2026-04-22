@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import shlex
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -193,6 +196,70 @@ def default_tool_registry(config: AppConfig) -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name="patch_text_file",
+            description=(
+                "Replace one exact UTF-8 text span in an allowed text file. "
+                "Sensitive files require the conversation's Sensitive unlock. "
+                "Creates a runtime backup before writing."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                    "expected_sha256": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+            handler=lambda args, ctx: _patch_text_file(
+                args,
+                ctx,
+                policy=policy,
+                backup_root=config.database.path.parent / "tool-backups",
+                output_limit=config.tools.output_limit_bytes,
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="run_shell",
+            description=(
+                "Run a bounded command using structured argv and an allowed cwd. "
+                "Raw shell strings, Sensitive paths, and inherited secret env are not allowed."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "argv": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 32,
+                    },
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+                },
+                "required": ["argv", "cwd"],
+                "additionalProperties": False,
+            },
+            handler=lambda args, ctx: _run_shell(
+                args,
+                policy=policy,
+                allowed_cwd_roots=(
+                    config.paths.vault,
+                    config.paths.llm_workspace,
+                    Path(__file__).resolve().parents[2],
+                ),
+                sensitive_root=config.paths.sensitive,
+                default_timeout=config.tools.default_timeout_seconds,
+                output_limit=config.tools.output_limit_bytes,
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name="get_health_status",
             description="Return basic deterministic DELAMAIN backend helper/path health.",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
@@ -204,6 +271,147 @@ def default_tool_registry(config: AppConfig) -> ToolRegistry:
         )
     )
     return registry
+
+
+async def _patch_text_file(
+    args: dict[str, Any],
+    context: ToolExecutionContext,
+    *,
+    policy: PathPolicy,
+    backup_root: Path,
+    output_limit: int,
+) -> dict[str, Any]:
+    start = time.monotonic()
+    raw_path = _required_string(args, "path")
+    old_text = _required_string(args, "old_text")
+    new_text = args.get("new_text")
+    if not isinstance(new_text, str):
+        raise ToolPolicyDenied("Missing required string argument: new_text")
+    expected_sha256 = args.get("expected_sha256")
+    if expected_sha256 is not None and not isinstance(expected_sha256, str):
+        raise ToolPolicyDenied("expected_sha256 must be a string when provided")
+    decision = policy.check(
+        raw_path,
+        operation="write",
+        sensitive_unlocked=context.sensitive_unlocked,
+    )
+    if not decision.path.is_file():
+        raise ToolPolicyDenied(f"Path is not a file: {decision.path}")
+    original_bytes = decision.path.read_bytes()
+    original_sha = hashlib.sha256(original_bytes).hexdigest()
+    if expected_sha256 and expected_sha256 != original_sha:
+        raise ToolPolicyDenied("File sha256 did not match expected_sha256")
+    original_text = original_bytes.decode("utf-8", errors="strict")
+    occurrences = original_text.count(old_text)
+    if occurrences != 1:
+        raise ToolPolicyDenied(
+            f"old_text must match exactly once; matched {occurrences} times"
+        )
+    updated_text = original_text.replace(old_text, new_text, 1)
+    backup_path = _write_tool_backup(
+        source_path=decision.path,
+        content=original_bytes,
+        backup_root=backup_root,
+    )
+    decision.path.write_text(updated_text, encoding="utf-8")
+    updated_bytes = updated_text.encode("utf-8")
+    stdout_payload = {
+        "path": str(decision.path),
+        "backup_path": str(backup_path),
+        "old_sha256": original_sha,
+        "new_sha256": hashlib.sha256(updated_bytes).hexdigest(),
+        "old_byte_count": len(original_bytes),
+        "new_byte_count": len(updated_bytes),
+    }
+    stdout_raw = json.dumps(stdout_payload, sort_keys=True)
+    encoded = stdout_raw.encode("utf-8")
+    truncated = len(encoded) > output_limit
+    return {
+        "status": "success",
+        "path": str(decision.path),
+        "root": decision.root_name,
+        "stdout": encoded[:output_limit].decode("utf-8", errors="replace"),
+        "stderr": "",
+        "duration_ms": int((time.monotonic() - start) * 1000),
+        "backup_path": str(backup_path),
+        "truncated": truncated,
+    }
+
+
+async def _run_shell(
+    args: dict[str, Any],
+    *,
+    policy: PathPolicy,
+    allowed_cwd_roots: tuple[Path, ...],
+    sensitive_root: Path,
+    default_timeout: int,
+    output_limit: int,
+) -> dict[str, Any]:
+    start = time.monotonic()
+    argv = _required_string_list(args, "argv")
+    raw_cwd = _required_string(args, "cwd")
+    timeout = int(args.get("timeout_seconds") or min(default_timeout, 60))
+    if timeout < 1 or timeout > 60:
+        raise ToolPolicyDenied("timeout_seconds must be between 1 and 60")
+    executable = Path(argv[0]).expanduser()
+    if not executable.is_absolute():
+        raise ToolPolicyDenied("run_shell argv[0] must be an absolute executable path")
+    if executable.name in {"sh", "bash", "zsh", "fish", "dash"} and any(
+        arg == "-c" or (arg.startswith("-") and "c" in arg) for arg in argv[1:]
+    ):
+        raise ToolPolicyDenied("run_shell does not allow shell -c command strings")
+    cwd_decision = policy.check(
+        raw_cwd,
+        operation="shell",
+        sensitive_unlocked=False,
+        allow_binary=True,
+    )
+    if cwd_decision.sensitive:
+        raise ToolPolicyDenied("Sensitive paths are not allowed as run_shell cwd")
+    if not cwd_decision.path.is_dir():
+        raise ToolPolicyDenied(f"run_shell cwd is not a directory: {cwd_decision.path}")
+    if not _inside_any(cwd_decision.path, allowed_cwd_roots):
+        raise ToolPolicyDenied(f"run_shell cwd is outside allowed roots: {cwd_decision.path}")
+    for arg in argv:
+        if _argument_targets_sensitive(arg, cwd_decision.path, sensitive_root):
+            raise ToolPolicyDenied("Sensitive paths are not allowed in run_shell argv")
+
+    stdout = b""
+    stderr = b""
+    timed_out = False
+    exit_code: int | None = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd_decision.path),
+            env=_minimal_env(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            exit_code = process.returncode
+        except asyncio.TimeoutError:
+            timed_out = True
+            process.kill()
+            stdout, stderr = await process.communicate()
+            exit_code = process.returncode
+            stderr += f"\nTimed out after {timeout}s\n".encode("utf-8")
+    except FileNotFoundError as exc:
+        stderr = str(exc).encode("utf-8")
+    except OSError as exc:
+        stderr = f"{type(exc).__name__}: {exc}".encode("utf-8")
+
+    truncated = len(stdout) > output_limit or len(stderr) > output_limit
+    status = "timeout" if timed_out else ("success" if exit_code == 0 else "failed")
+    return {
+        "status": status,
+        "returncode": exit_code,
+        "stdout": stdout[:output_limit].decode("utf-8", errors="replace"),
+        "stderr": stderr[:output_limit].decode("utf-8", errors="replace"),
+        "duration_ms": int((time.monotonic() - start) * 1000),
+        "truncated": truncated,
+    }
 
 
 async def _read_text_file(
@@ -574,3 +782,80 @@ def _required_string(args: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ToolPolicyDenied(f"Missing required string argument: {key}")
     return value
+
+
+def _required_string_list(args: dict[str, Any], key: str) -> list[str]:
+    value = args.get(key)
+    if not isinstance(value, list) or not value:
+        raise ToolPolicyDenied(f"Missing required string array argument: {key}")
+    if len(value) > 32:
+        raise ToolPolicyDenied(f"{key} can contain at most 32 arguments")
+    if not all(isinstance(item, str) and item for item in value):
+        raise ToolPolicyDenied(f"{key} must contain non-empty strings")
+    return list(value)
+
+
+def _write_tool_backup(*, source_path: Path, content: bytes, backup_root: Path) -> Path:
+    backup_root = backup_root.expanduser().resolve(strict=False)
+    safe_name = source_path.name.replace("/", "_") or "file"
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    backup_dir = backup_root / "patch_text_file"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_dir / f"{safe_name}.{stamp}.{time.time_ns()}.bak"
+    backup_path.write_bytes(content)
+    return backup_path
+
+
+def _minimal_env() -> dict[str, str]:
+    return {
+        "HOME": str(Path.home()),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "TZ": os.environ.get("TZ", "America/New_York"),
+    }
+
+
+def _argument_targets_sensitive(arg: str, cwd: Path, sensitive_root: Path) -> bool:
+    for token in _path_like_tokens(arg):
+        expanded = Path(token).expanduser()
+        candidate = expanded if expanded.is_absolute() else cwd / expanded
+        if _inside(candidate, sensitive_root):
+            return True
+    return False
+
+
+def _path_like_tokens(arg: str) -> list[str]:
+    candidates = [arg]
+    if "=" in arg:
+        candidates.append(arg.split("=", 1)[1])
+    tokens: list[str] = []
+    for candidate in candidates:
+        try:
+            split_tokens = shlex.split(candidate)
+        except ValueError:
+            split_tokens = [candidate]
+        for token in split_tokens:
+            if _looks_path_like(token):
+                tokens.append(token)
+    return tokens
+
+
+def _looks_path_like(token: str) -> bool:
+    return (
+        token.startswith("/")
+        or token.startswith("~/")
+        or token.startswith("./")
+        or token.startswith("../")
+        or "/" in token
+    )
+
+
+def _inside(path: Path, root: Path) -> bool:
+    resolved = path.expanduser().resolve(strict=False)
+    resolved_root = root.expanduser().resolve(strict=False)
+    return resolved == resolved_root or resolved_root in resolved.parents
+
+
+def _inside_any(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(_inside(path, root) for root in roots)

@@ -181,3 +181,43 @@ MIGRATIONS.append(
         """,
     )
 )
+
+MIGRATIONS.append(
+    (
+        4,
+        """
+        CREATE TABLE IF NOT EXISTS folders (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            parent_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+
+        ALTER TABLE conversations ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_folders_parent
+            ON folders(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_conversations_folder
+            ON conversations(folder_id);
+
+        CREATE TABLE IF NOT EXISTS permissions (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            decision TEXT,
+            resolver TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            resolved_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_permissions_run
+            ON permissions(run_id, status);
+        """,
+    )
+)

@@ -45,6 +45,13 @@ class ModelsConfig:
 
 
 @dataclass(frozen=True)
+class CopilotBudgetConfig:
+    monthly_premium_requests: int
+    soft_threshold_percent: int
+    hard_threshold_percent: int
+
+
+@dataclass(frozen=True)
 class ToolsConfig:
     max_tool_iterations: int
     default_timeout_seconds: int
@@ -95,6 +102,7 @@ class AppConfig:
     database: DatabaseConfig
     paths: PathsConfig
     models: ModelsConfig
+    copilot_budget: CopilotBudgetConfig
     tools: ToolsConfig
     runtime: RuntimeConfig
     auth: AuthConfig
@@ -135,6 +143,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     database = raw.get("database", {})
     paths = raw.get("paths", {})
     models = raw.get("models", {})
+    copilot_budget = raw.get("copilot_budget", {})
     tools = raw.get("tools", {})
     runtime = raw.get("runtime", {})
     auth = raw.get("auth", {})
@@ -169,6 +178,13 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
             fallback_high_volume=str(models["fallback_high_volume"]),
             fallback_cheap=str(models["fallback_cheap"]),
             paid_fallback=str(models["paid_fallback"]),
+        ),
+        copilot_budget=CopilotBudgetConfig(
+            monthly_premium_requests=int(
+                copilot_budget.get("monthly_premium_requests", 300)
+            ),
+            soft_threshold_percent=int(copilot_budget.get("soft_threshold_percent", 60)),
+            hard_threshold_percent=int(copilot_budget.get("hard_threshold_percent", 90)),
         ),
         tools=ToolsConfig(
             max_tool_iterations=int(tools["max_tool_iterations"]),

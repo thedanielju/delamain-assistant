@@ -11,6 +11,7 @@ from delamain_backend.agent.context import context_items_for_run
 from delamain_backend.agent.litellm_client import LiteLLMModelClient, ModelClient, StubModelClient
 from delamain_backend.agent.router import api_family_for_route, fallback_chain
 from delamain_backend.agent.tool_loop import MaxToolIterationsExceeded
+from delamain_backend.budget import copilot_budget_status, is_copilot_route
 from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
 from delamain_backend.errors import DelamainError, SensitiveLocked, ToolPolicyDenied
@@ -204,7 +205,11 @@ class RunManager:
             for call in tool_calls:
                 if await self._run_is_cancelled(run["id"]):
                     return "".join(text_parts) or "Cancelled."
-                tool_result_content = await self._execute_tool_call(run, call)
+                tool_result_content = await self._execute_tool_call(
+                    run,
+                    call,
+                    assistant_message_id=assistant_message_id,
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -233,7 +238,72 @@ class RunManager:
         if self.config.runtime.disable_model_fallbacks:
             attempts = attempts[:1]
         last_exc: Exception | None = None
+        budget_warning_emitted = False
         for attempt in attempts:
+            if is_copilot_route(attempt.model_route):
+                budget = await copilot_budget_status(self.config, self.db)
+                if budget["status"] in {"soft", "hard"} and not budget_warning_emitted:
+                    action = (
+                        "model.budget_override"
+                        if budget["status"] == "hard" and budget["hard_override_enabled"]
+                        else "model.budget_threshold"
+                    )
+                    await self.bus.emit(
+                        conversation_id=run["conversation_id"],
+                        run_id=run["id"],
+                        event_type="audit",
+                        payload={
+                            "action": action,
+                            "summary": (
+                                "Copilot budget hard threshold overridden"
+                                if action == "model.budget_override"
+                                else f"Copilot budget threshold reached: {budget['status']}"
+                            ),
+                            "status": budget["status"],
+                            "percent_used": budget["percent_used"],
+                            "used_premium_requests": budget["used_premium_requests"],
+                            "monthly_premium_requests": budget["monthly_premium_requests"],
+                            "hard_override_enabled": budget["hard_override_enabled"],
+                        },
+                    )
+                    budget_warning_emitted = True
+                if budget["enforced"]:
+                    model_call_id = new_id("modelcall")
+                    await self.db.execute(
+                        """
+                        INSERT INTO model_calls(
+                            id, run_id, model_route, api_family, status,
+                            fallback_from, fallback_reason, error_message,
+                            completed_at
+                        )
+                        VALUES (?, ?, ?, ?, 'blocked', ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                        """,
+                        (
+                            model_call_id,
+                            run["id"],
+                            attempt.model_route,
+                            attempt.api_family,
+                            attempt.fallback_from,
+                            attempt.fallback_reason,
+                            "Copilot budget hard threshold reached",
+                        ),
+                    )
+                    last_exc = RuntimeError("Copilot budget hard threshold reached")
+                    await self.bus.emit(
+                        conversation_id=run["conversation_id"],
+                        run_id=run["id"],
+                        event_type="audit",
+                        payload={
+                            "action": "model.budget_blocked",
+                            "summary": f"Blocked Copilot route over budget: {attempt.model_route}",
+                            "model_route": attempt.model_route,
+                            "status": budget["status"],
+                            "percent_used": budget["percent_used"],
+                            "used_premium_requests": budget["used_premium_requests"],
+                            "monthly_premium_requests": budget["monthly_premium_requests"],
+                        },
+                    )
+                    continue
             if attempt.fallback_from is not None:
                 await self.bus.emit(
                     conversation_id=run["conversation_id"],
@@ -338,7 +408,7 @@ class RunManager:
                     conversation_id=run["conversation_id"],
                     run_id=run["id"],
                     event_type="model.usage",
-                    payload=usage,
+                    payload=_model_usage_event_payload(run["id"], attempt.model_route, usage),
                 )
             return model_result
 
@@ -348,6 +418,8 @@ class RunManager:
         self,
         run: dict[str, Any],
         call: dict[str, Any],
+        *,
+        assistant_message_id: str,
     ) -> str:
         tool_call_id = str(call["id"])
         tool_name = str(call["name"])
@@ -361,8 +433,11 @@ class RunManager:
             event_type="tool.started",
             payload={
                 "tool_call_id": tool_call_id,
+                "assistant_message_id": assistant_message_id,
                 "tool": tool_name,
+                "name": tool_name,
                 "arguments": arguments,
+                "args": arguments,
                 "summary": f"Run {tool_name}",
             },
         )
@@ -418,9 +493,12 @@ class RunManager:
                 event_type="tool.finished",
                 payload={
                     "tool_call_id": tool_call_id,
+                    "assistant_message_id": assistant_message_id,
                     "status": "failed",
                     "duration_ms": 0,
                     "result_summary": str(exc)[:200],
+                    "stdout": "",
+                    "stderr": str(exc),
                 },
             )
             raise
@@ -440,14 +518,26 @@ class RunManager:
                 conversation_id=run["conversation_id"],
                 run_id=run["id"],
                 event_type="tool.output",
-                payload={"tool_call_id": tool_call_id, "stream": "stdout", "text": stdout},
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "assistant_message_id": assistant_message_id,
+                    "stream": "stdout",
+                    "text": stdout,
+                    "chunk": stdout,
+                },
             )
         if stderr:
             await self.bus.emit(
                 conversation_id=run["conversation_id"],
                 run_id=run["id"],
                 event_type="tool.output",
-                payload={"tool_call_id": tool_call_id, "stream": "stderr", "text": stderr},
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "assistant_message_id": assistant_message_id,
+                    "stream": "stderr",
+                    "text": stderr,
+                    "chunk": stderr,
+                },
             )
         if result.get("truncated"):
             await self.bus.emit(
@@ -482,9 +572,12 @@ class RunManager:
             event_type="tool.finished",
             payload={
                 "tool_call_id": tool_call_id,
+                "assistant_message_id": assistant_message_id,
                 "status": status,
                 "duration_ms": int(result.get("duration_ms") or 0),
                 "result_summary": _summarize_tool_result(result),
+                "stdout": stdout,
+                "stderr": stderr,
             },
         )
 
@@ -605,6 +698,24 @@ def _summarize_tool_result(result: dict[str, Any]) -> str:
     if stderr:
         return stderr[:200]
     return str(result.get("status") or "completed")
+
+
+def _model_usage_event_payload(
+    run_id: str,
+    model_route: str,
+    usage: dict[str, Any],
+) -> dict[str, Any]:
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    return {
+        **usage,
+        "run_id": run_id,
+        "model_route": model_route,
+        "prompt_tokens": input_tokens,
+        "completion_tokens": output_tokens,
+        "premium_request_count": usage.get("premium_units"),
+        "estimated_cost": usage.get("estimated_cost_usd"),
+    }
 
 
 def _arguments_target_sensitive(arguments: dict[str, Any], sensitive_root: Path) -> bool:

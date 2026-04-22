@@ -15,6 +15,7 @@ from delamain_backend.workers.registry import WorkerType, WorkerTypeRegistry
 WORKER_TMUX_SOCKET = "/home/danielju/.local/share/delamain/workers.sock"
 SESSION_PREFIX = "dw-"
 CAPTURE_LINES = 200
+SUPPORTED_WORKER_HOSTS = {"serrano", "winpc"}
 
 
 class WorkerManager:
@@ -44,8 +45,8 @@ class WorkerManager:
         if wtype is None:
             raise ValueError(f"Unknown worker type: {worker_type_id}")
 
-        if wtype.host != "serrano":
-            raise ValueError(f"Only serrano workers are supported; got host={wtype.host}")
+        if wtype.host not in SUPPORTED_WORKER_HOSTS:
+            raise ValueError(f"Unsupported worker host: {wtype.host}")
 
         worker_id = f"worker_{uuid.uuid4().hex[:12]}"
         session_name = f"{SESSION_PREFIX}{worker_id}"
@@ -89,21 +90,7 @@ class WorkerManager:
         )
 
         try:
-            self.tmux_socket.parent.mkdir(parents=True, exist_ok=True)
-            proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/tmux",
-                "-S", str(self.tmux_socket),
-                "new-session",
-                "-d",
-                "-s", session_name,
-                "-x", "200",
-                "-y", "50",
-                *wtype.command_template,
-                cwd=cwd,
-                env=_worker_env(wtype),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            proc = await self._start_session_process(wtype, session_name, cwd)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             if proc.returncode != 0:
                 error = stderr.decode("utf-8", errors="replace").strip()
@@ -111,14 +98,14 @@ class WorkerManager:
                 return await self._worker_out(worker_id)
         except asyncio.TimeoutError:
             # tmux server cold-start can be slow; check if session came up
-            if not await self._session_alive(session_name):
+            if not await self._session_alive(session_name, host=wtype.host):
                 await self._mark_failed(worker_id, "tmux session creation timed out")
                 return await self._worker_out(worker_id)
         except Exception as exc:
             await self._mark_failed(worker_id, str(exc))
             return await self._worker_out(worker_id)
 
-        alive = await self._session_alive(session_name)
+        alive = await self._session_alive(session_name, host=wtype.host)
         status = "running" if alive else "failed"
         if status == "running":
             await self.db.execute(
@@ -147,31 +134,13 @@ class WorkerManager:
             raise ValueError(f"Worker is not running (status={row['status']})")
         session_name = row["tmux_session"]
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/tmux",
-                "-S", str(self.tmux_socket),
-                "send-keys",
-                "-t", session_name,
-                "C-c", "",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
+            await self._send_keys(session_name, row["host"], "C-c", "")
             await asyncio.sleep(0.5)
-            proc2 = await asyncio.create_subprocess_exec(
-                "/usr/bin/tmux",
-                "-S", str(self.tmux_socket),
-                "send-keys",
-                "-t", session_name,
-                "exit", "Enter",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc2.communicate(), timeout=5)
+            await self._send_keys(session_name, row["host"], "exit", "Enter")
             await asyncio.sleep(1)
         except Exception:
             pass
-        alive = await self._session_alive(session_name)
+        alive = await self._session_alive(session_name, host=row["host"])
         if alive:
             await self.db.execute(
                 """
@@ -207,15 +176,7 @@ class WorkerManager:
             raise ValueError(f"Worker is already {row['status']}")
         session_name = row["tmux_session"]
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/tmux",
-                "-S", str(self.tmux_socket),
-                "kill-session",
-                "-t", session_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
+            await self._kill_session(session_name, row["host"])
         except Exception:
             pass
         await self.db.execute(
@@ -239,20 +200,11 @@ class WorkerManager:
     async def capture_output(self, worker_id: str, lines: int = CAPTURE_LINES) -> dict[str, Any]:
         row = await self._get_worker(worker_id)
         session_name = row["tmux_session"]
-        alive = await self._session_alive(session_name)
+        alive = await self._session_alive(session_name, host=row["host"])
         output = ""
         if alive:
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "/usr/bin/tmux",
-                    "-S", str(self.tmux_socket),
-                    "capture-pane",
-                    "-p",
-                    "-t", session_name,
-                    "-S", str(-lines),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
+                proc = await self._capture_process(session_name, row["host"], lines)
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
                 if proc.returncode == 0:
                     output = stdout.decode("utf-8", errors="replace")
@@ -294,7 +246,7 @@ class WorkerManager:
     async def refresh_status(self, worker_id: str) -> dict[str, Any]:
         row = await self._get_worker(worker_id)
         if row["status"] in ("running", "starting", "stopping"):
-            alive = await self._session_alive(row["tmux_session"])
+            alive = await self._session_alive(row["tmux_session"], host=row["host"])
             if not alive and row["status"] != "stopped":
                 await self.db.execute(
                     """
@@ -315,7 +267,7 @@ class WorkerManager:
         alive = 0
         stopped = 0
         for row in rows:
-            session_alive = await self._session_alive(row["tmux_session"])
+            session_alive = await self._session_alive(row["tmux_session"], host=row["host"])
             if session_alive:
                 alive += 1
                 if row["status"] == "starting":
@@ -342,16 +294,141 @@ class WorkerManager:
             )
         return {"checked": len(rows), "alive": alive, "stopped": stopped}
 
-    async def _session_alive(self, session_name: str) -> bool:
-        try:
+    async def _start_session_process(
+        self,
+        wtype: WorkerType,
+        session_name: str,
+        cwd: str,
+    ) -> asyncio.subprocess.Process:
+        if wtype.host == "winpc":
+            return await asyncio.create_subprocess_exec(
+                "/usr/bin/ssh",
+                "winpc",
+                _winpc_tmux_command(
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session_name,
+                    "-c",
+                    cwd,
+                    "-x",
+                    "200",
+                    "-y",
+                    "50",
+                    "--",
+                    *wtype.command_template,
+                ),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        self.tmux_socket.parent.mkdir(parents=True, exist_ok=True)
+        return await asyncio.create_subprocess_exec(
+            "/usr/bin/tmux",
+            "-S", str(self.tmux_socket),
+            "new-session",
+            "-d",
+            "-s", session_name,
+            "-x", "200",
+            "-y", "50",
+            *wtype.command_template,
+            cwd=cwd,
+            env=_worker_env(wtype),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def _send_keys(self, session_name: str, host: str, *keys: str) -> None:
+        if host == "winpc":
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/ssh",
+                "winpc",
+                _winpc_tmux_command("send-keys", "-t", session_name, *keys),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
             proc = await asyncio.create_subprocess_exec(
                 "/usr/bin/tmux",
                 "-S", str(self.tmux_socket),
-                "has-session",
+                "send-keys",
+                "-t", session_name,
+                *keys,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        await asyncio.wait_for(proc.communicate(), timeout=5)
+
+    async def _kill_session(self, session_name: str, host: str) -> None:
+        if host == "winpc":
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/ssh",
+                "winpc",
+                _winpc_tmux_command("kill-session", "-t", session_name),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/tmux",
+                "-S", str(self.tmux_socket),
+                "kill-session",
                 "-t", session_name,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+        await asyncio.wait_for(proc.communicate(), timeout=5)
+
+    async def _capture_process(
+        self,
+        session_name: str,
+        host: str,
+        lines: int,
+    ) -> asyncio.subprocess.Process:
+        if host == "winpc":
+            return await asyncio.create_subprocess_exec(
+                "/usr/bin/ssh",
+                "winpc",
+                _winpc_tmux_command(
+                    "capture-pane",
+                    "-p",
+                    "-t",
+                    session_name,
+                    "-S",
+                    str(-lines),
+                ),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        return await asyncio.create_subprocess_exec(
+            "/usr/bin/tmux",
+            "-S", str(self.tmux_socket),
+            "capture-pane",
+            "-p",
+            "-t", session_name,
+            "-S", str(-lines),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def _session_alive(self, session_name: str, *, host: str) -> bool:
+        try:
+            if host == "winpc":
+                proc = await asyncio.create_subprocess_exec(
+                    "/usr/bin/ssh",
+                    "winpc",
+                    _winpc_tmux_command("has-session", "-t", session_name),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    "/usr/bin/tmux",
+                    "-S", str(self.tmux_socket),
+                    "has-session",
+                    "-t", session_name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
             await asyncio.wait_for(proc.communicate(), timeout=5)
             return proc.returncode == 0
         except Exception:
@@ -420,3 +497,13 @@ def _worker_row_out(row: dict[str, Any]) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             out["metadata"] = {}
     return out
+
+
+def _winpc_tmux_command(*args: str) -> str:
+    return " ".join(("wsl.exe", "-e", "tmux", *(_quote_remote_arg(arg) for arg in args)))
+
+
+def _quote_remote_arg(arg: str) -> str:
+    if all(ch.isalnum() or ch in "-_./:" for ch in arg):
+        return arg
+    return "'" + arg.replace("'", "'\"'\"'") + "'"

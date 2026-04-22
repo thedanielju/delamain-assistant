@@ -46,6 +46,14 @@ def shell_worker_registry(tmp_path):
                 host="winpc",
                 cwd=tmp_path,
             ),
+            WorkerType(
+                id="unsupported_worker",
+                label="Unsupported Worker",
+                description="A worker on an unsupported host.",
+                command_template=("/bin/bash",),
+                host="mac",
+                cwd=tmp_path,
+            ),
         ]
     )
 
@@ -67,6 +75,7 @@ def test_list_worker_types(test_config):
         assert "shell" in type_ids
         assert "opencode" in type_ids
         assert "claude_code" in type_ids
+        assert "winpc_shell" in type_ids
 
 
 def test_start_shell_worker_and_lifecycle(test_config, shell_worker_registry, tmp_path):
@@ -184,8 +193,7 @@ def test_unknown_worker_type_rejected(test_config, shell_worker_registry, tmp_pa
             loop.run_until_complete(mgr.start("nonexistent_type"))
 
 
-def test_remote_host_rejected(test_config, shell_worker_registry, tmp_path):
-    """Only serrano workers are supported for now."""
+def test_unsupported_host_rejected(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"
     app = create_app(test_config)
     with TestClient(app) as client:
@@ -201,8 +209,51 @@ def test_remote_host_rejected(test_config, shell_worker_registry, tmp_path):
             tmux_socket=str(socket_path),
         )
 
-        with pytest.raises(ValueError, match="Only serrano"):
-            loop.run_until_complete(mgr.start("remote_worker"))
+        with pytest.raises(ValueError, match="Unsupported worker host"):
+            loop.run_until_complete(mgr.start("unsupported_worker"))
+
+
+def test_winpc_worker_uses_ssh_wsl_tmux_adapter(test_config, shell_worker_registry, tmp_path, monkeypatch):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_start(self, wtype, session_name, cwd):
+        assert wtype.host == "winpc"
+        assert session_name.startswith("dw-worker_")
+        return FakeProc()
+
+    async def fake_alive(self, session_name, *, host):
+        assert host == "winpc"
+        return True
+
+    from delamain_backend.workers.manager import WorkerManager, _winpc_tmux_command
+    import asyncio
+
+    monkeypatch.setattr(WorkerManager, "_start_session_process", fake_start)
+    monkeypatch.setattr(WorkerManager, "_session_alive", fake_alive)
+
+    with TestClient(app):
+        loop = asyncio.get_event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        result = loop.run_until_complete(mgr.start("remote_worker", name="winpc-test"))
+        assert result["status"] == "running"
+        assert result["host"] == "winpc"
+        assert result["worker_type"] == "remote_worker"
+        assert _winpc_tmux_command("has-session", "-t", "dw-worker_abc") == (
+            "wsl.exe -e tmux has-session -t dw-worker_abc"
+        )
 
 
 def test_stop_already_stopped_rejected(test_config, shell_worker_registry, tmp_path):

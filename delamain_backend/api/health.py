@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 
 from delamain_backend.api.deps import get_config, get_db
+from delamain_backend.budget import copilot_budget_status
 from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
 from delamain_backend.dependencies import assert_litellm_version_allowed, get_litellm_version
@@ -31,6 +32,7 @@ async def health(config: AppConfig = Depends(get_config), db: Database = Depends
         ),
     }
     sqlite_ok = await db.healthcheck()
+    budget = await copilot_budget_status(config, db)
     return {
         "status": "ok" if sqlite_ok and litellm_allowed else "degraded",
         "sqlite": {"path": str(config.database.path), "ok": sqlite_ok},
@@ -45,6 +47,7 @@ async def health(config: AppConfig = Depends(get_config), db: Database = Depends
             "model_default": config.models.default,
             "model_calls_enabled": config.runtime.enable_model_calls,
         },
+        "budget": budget,
         "helpers": helpers,
     }
 

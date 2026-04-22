@@ -307,6 +307,99 @@ async def test_read_text_file_blocks_restricted_file(m4_config):
         )
 
 
+async def test_patch_text_file_replaces_exactly_once_and_backs_up(m4_config):
+    note = m4_config.paths.vault / "note.md"
+    note.write_text("hello old text", encoding="utf-8")
+    result = await default_tool_registry(m4_config).execute(
+        "patch_text_file",
+        {"path": str(note), "old_text": "old", "new_text": "new"},
+        ToolExecutionContext(sensitive_unlocked=False),
+    )
+    assert result["status"] == "success"
+    assert note.read_text(encoding="utf-8") == "hello new text"
+    payload = json.loads(result["stdout"])
+    assert payload["backup_path"]
+    assert "old_sha256" in payload
+
+
+async def test_patch_text_file_writes_sensitive_when_unlocked(m4_config):
+    secret = m4_config.paths.sensitive / "note.md"
+    secret.write_text("old", encoding="utf-8")
+    result = await default_tool_registry(m4_config).execute(
+        "patch_text_file",
+        {"path": str(secret), "old_text": "old", "new_text": "new"},
+        ToolExecutionContext(sensitive_unlocked=True),
+    )
+    assert result["status"] == "success"
+    assert result["root"] == "sensitive"
+    assert secret.read_text(encoding="utf-8") == "new"
+
+
+async def test_patch_text_file_blocks_sensitive_when_locked(m4_config):
+    secret = m4_config.paths.sensitive / "note.md"
+    secret.write_text("old", encoding="utf-8")
+    with pytest.raises(SensitiveLocked):
+        await default_tool_registry(m4_config).execute(
+            "patch_text_file",
+            {"path": str(secret), "old_text": "old", "new_text": "new"},
+            ToolExecutionContext(sensitive_unlocked=False),
+        )
+
+
+async def test_patch_text_file_requires_single_preimage_match(m4_config):
+    note = m4_config.paths.vault / "note.md"
+    note.write_text("same same", encoding="utf-8")
+    with pytest.raises(ToolPolicyDenied, match="exactly once"):
+        await default_tool_registry(m4_config).execute(
+            "patch_text_file",
+            {"path": str(note), "old_text": "same", "new_text": "new"},
+            ToolExecutionContext(sensitive_unlocked=False),
+        )
+
+
+async def test_run_shell_executes_argv_with_allowed_cwd(m4_config):
+    result = await default_tool_registry(m4_config).execute(
+        "run_shell",
+        {
+            "argv": ["/usr/bin/printf", "ok"],
+            "cwd": str(m4_config.paths.llm_workspace),
+        },
+        ToolExecutionContext(sensitive_unlocked=False),
+    )
+    assert result["status"] == "success"
+    assert result["stdout"] == "ok"
+
+
+async def test_run_shell_denies_sensitive_cwd_and_argv(m4_config):
+    with pytest.raises((ToolPolicyDenied, SensitiveLocked)):
+        await default_tool_registry(m4_config).execute(
+            "run_shell",
+            {"argv": ["/bin/echo", "ok"], "cwd": str(m4_config.paths.sensitive)},
+            ToolExecutionContext(sensitive_unlocked=False),
+        )
+    with pytest.raises(ToolPolicyDenied, match="Sensitive paths"):
+        await default_tool_registry(m4_config).execute(
+            "run_shell",
+            {
+                "argv": ["/bin/echo", str(m4_config.paths.sensitive / "note.md")],
+                "cwd": str(m4_config.paths.llm_workspace),
+            },
+            ToolExecutionContext(sensitive_unlocked=False),
+        )
+
+
+async def test_run_shell_denies_shell_command_strings(m4_config):
+    with pytest.raises(ToolPolicyDenied, match="shell -c"):
+        await default_tool_registry(m4_config).execute(
+            "run_shell",
+            {
+                "argv": ["/bin/bash", "-lc", "echo unsafe"],
+                "cwd": str(m4_config.paths.llm_workspace),
+            },
+            ToolExecutionContext(sensitive_unlocked=False),
+        )
+
+
 def _wait_for_run(client: TestClient, run_id: str) -> dict:
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:

@@ -7,6 +7,7 @@ import pytest
 
 from delamain_backend.config import (
     AppConfig,
+    CopilotBudgetConfig,
     DatabaseConfig,
     ModelsConfig,
     AuthConfig,
@@ -50,6 +51,11 @@ def test_config(tmp_path: Path) -> AppConfig:
             fallback_high_volume="github_copilot/gpt-5-mini",
             fallback_cheap="github_copilot/claude-haiku-4.5",
             paid_fallback="openrouter/deepseek/deepseek-v3.2",
+        ),
+        copilot_budget=CopilotBudgetConfig(
+            monthly_premium_requests=300,
+            soft_threshold_percent=60,
+            hard_threshold_percent=90,
         ),
         tools=ToolsConfig(
             max_tool_iterations=8,

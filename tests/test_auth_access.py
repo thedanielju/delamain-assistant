@@ -17,7 +17,11 @@ def test_access_required_rejects_missing_cloudflare_jwt(test_config, tmp_path):
     with TestClient(app) as client:
         response = client.get("/api/health")
         assert response.status_code == 401
-        assert response.json()["detail"]["code"] == "AUTH_REQUIRED"
+        detail = response.json()["detail"]
+        assert detail["code"] == "auth_required"
+        assert detail["redirect_url"].startswith(
+            "https://danielju.cloudflareaccess.com/cdn-cgi/access/login"
+        )
 
 
 def test_access_required_accepts_valid_cloudflare_jwt(test_config, tmp_path):

@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode
+
+from delamain_backend.budget import copilot_budget_status
+from delamain_backend.config import AppConfig
+from delamain_backend.db import Database
+from delamain_backend.subscription_status import subscription_status
+
+PROVIDERS = ("copilot", "claude", "codex", "openrouter")
+
+
+def _month_start_utc() -> str:
+    now = datetime.now(UTC)
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+
+
+async def usage_summary(config: AppConfig, db: Database) -> dict[str, Any]:
+    provider_counts = await _provider_counts(db)
+    copilot = await copilot_budget_status(config, db)
+    openrouter_credits = _openrouter_credits(config)
+    anthropic_costs = _anthropic_costs(config)
+    openai_costs = _openai_costs(config)
+    subscriptions = subscription_status(config)
+    claude_subscription = subscriptions["providers"]["claude"]
+    codex_subscription = subscriptions["providers"]["codex"]
+    providers = [
+        {
+            "provider": "copilot",
+            "label": "GitHub Copilot",
+            "period": copilot["period"],
+            "unit": "premium_requests",
+            "used": copilot["used_premium_requests"],
+            "limit_or_credits": copilot["monthly_premium_requests"],
+            "percent_used": copilot["percent_used"],
+            "status": copilot["status"],
+            "wired": True,
+            "details": {
+                "soft_threshold_percent": copilot["soft_threshold_percent"],
+                "hard_threshold_percent": copilot["hard_threshold_percent"],
+                "hard_override_enabled": copilot["hard_override_enabled"],
+                "enforced": copilot["enforced"],
+            },
+        },
+        _stub_provider(
+            "claude",
+            "Claude",
+            provider_counts.get("claude", 0),
+            reason="ANTHROPIC_ADMIN_API_KEY is required for Anthropic Usage and Cost API.",
+            billing=anthropic_costs,
+            subscription=claude_subscription,
+        ),
+        _stub_provider(
+            "codex",
+            "Codex / OpenAI",
+            provider_counts.get("codex", 0),
+            reason=(
+                "OPENAI_ADMIN_API_KEY or OPENAI_API_KEY is required for OpenAI organization "
+                "cost reporting. Codex subscription billing has no public API hook here."
+            ),
+            billing=openai_costs,
+            subscription=codex_subscription,
+        ),
+        {
+            **_stub_provider(
+                "openrouter",
+                "OpenRouter",
+                provider_counts.get("openrouter", 0),
+                reason="OpenRouter call counts come from model_calls; credits require OPENROUTER_API_KEY.",
+            ),
+            "limit_or_credits": openrouter_credits.get("credits"),
+            "status": openrouter_credits.get("status", "not_configured"),
+            "wired": openrouter_credits.get("status") == "ok",
+            "details": {
+                "reason": openrouter_credits.get("reason"),
+                "remaining_credits": openrouter_credits.get("remaining_credits"),
+                "total_credits": openrouter_credits.get("credits"),
+                "total_usage": openrouter_credits.get("total_usage"),
+            },
+        },
+    ]
+    return {
+        "period": "current_month_utc",
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "providers": providers,
+        "subscriptions": subscriptions,
+    }
+
+
+async def _provider_counts(db: Database) -> dict[str, int]:
+    rows = await db.fetchall(
+        """
+        SELECT model_route, COUNT(*) AS count
+        FROM model_calls
+        WHERE status = 'completed'
+          AND created_at >= ?
+        GROUP BY model_route
+        """,
+        (_month_start_utc(),),
+    )
+    counts = {provider: 0 for provider in PROVIDERS}
+    for row in rows:
+        provider = _provider_for_route(str(row["model_route"]))
+        if provider in counts:
+            counts[provider] += int(row["count"] or 0)
+    return counts
+
+
+def _provider_for_route(model_route: str) -> str:
+    route = model_route.lower()
+    if route.startswith("github_copilot/"):
+        return "copilot"
+    if route.startswith("openrouter/"):
+        return "openrouter"
+    if route.startswith(("anthropic/", "claude/")):
+        return "claude"
+    if route.startswith(("codex/", "openai/codex")) or "/codex" in route:
+        return "codex"
+    return route.split("/", 1)[0] if "/" in route else "unknown"
+
+
+def _stub_provider(
+    provider: str,
+    label: str,
+    used: int,
+    *,
+    reason: str,
+    billing: dict[str, Any] | None = None,
+    subscription: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    billing = billing or {"status": "not_configured", "reason": reason}
+    status = billing.get("status", "not_configured")
+    wired = status == "ok"
+    if not wired and subscription and subscription.get("aggregate_status") == "ok":
+        status = "auth_ok_billing_not_configured"
+    return {
+        "provider": provider,
+        "label": label,
+        "period": "current_month_utc",
+        "unit": "usd" if billing.get("status") == "ok" else "calls",
+        "used": used,
+        "limit_or_credits": billing.get("amount_usd"),
+        "percent_used": None,
+        "status": status,
+        "wired": wired,
+        "details": {
+            "reason": billing.get("reason"),
+            "amount_usd": billing.get("amount_usd"),
+            "currency": billing.get("currency"),
+            "source": billing.get("source"),
+            "subscription": subscription,
+        },
+    }
+
+
+def _openrouter_credits(config: AppConfig) -> dict[str, Any]:
+    key = _secret(config, "OPENROUTER_API_KEY")
+    if not key:
+        return {"status": "not_configured", "reason": "OPENROUTER_API_KEY is not set"}
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return {"status": "unavailable", "reason": str(exc)}
+    payload = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        return {"status": "unavailable", "reason": "OpenRouter credits response was invalid"}
+    total = payload.get("total_credits") or payload.get("credits")
+    used = payload.get("total_usage")
+    remaining = None
+    if isinstance(total, (int, float)) and isinstance(used, (int, float)):
+        remaining = max(0.0, float(total) - float(used))
+    return {
+        "status": "ok",
+        "credits": total,
+        "total_usage": used,
+        "remaining_credits": remaining,
+        "reason": None,
+    }
+
+
+def _anthropic_costs(config: AppConfig) -> dict[str, Any]:
+    key = _secret(config, "ANTHROPIC_ADMIN_API_KEY")
+    if not key:
+        return {
+            "status": "not_configured",
+            "reason": "ANTHROPIC_ADMIN_API_KEY is not set",
+            "source": "anthropic_admin_cost_report",
+        }
+    start, end = _month_bounds()
+    query = urlencode({"starting_at": start, "ending_at": end, "bucket_width": "1d"})
+    request = urllib.request.Request(
+        f"https://api.anthropic.com/v1/organizations/cost_report?{query}",
+        headers={
+            "anthropic-version": "2023-06-01",
+            "x-api-key": key,
+            "User-Agent": "delamain-assistant/0.1",
+        },
+    )
+    return _cost_report(request, source="anthropic_admin_cost_report")
+
+
+def _openai_costs(config: AppConfig) -> dict[str, Any]:
+    key = _secret(config, "OPENAI_ADMIN_API_KEY") or _secret(config, "OPENAI_API_KEY")
+    if not key:
+        return {
+            "status": "not_configured",
+            "reason": "OPENAI_ADMIN_API_KEY or OPENAI_API_KEY is not set",
+            "source": "openai_organization_costs",
+        }
+    start = int(_month_start_datetime().timestamp())
+    end = int(datetime.now(UTC).timestamp())
+    query = urlencode({"start_time": start, "end_time": end, "bucket_width": "1d"})
+    request = urllib.request.Request(
+        f"https://api.openai.com/v1/organization/costs?{query}",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    return _cost_report(request, source="openai_organization_costs")
+
+
+def _cost_report(request: urllib.request.Request, *, source: str) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return {"status": "unavailable", "reason": str(exc), "source": source}
+    amount, currency = _sum_cost_amounts(data)
+    return {
+        "status": "ok",
+        "reason": None,
+        "amount_usd": amount,
+        "currency": currency or "usd",
+        "source": source,
+    }
+
+
+def _sum_cost_amounts(data: Any) -> tuple[float | None, str | None]:
+    total = 0.0
+    currency: str | None = None
+    found = False
+
+    def visit(value: Any) -> None:
+        nonlocal total, currency, found
+        if isinstance(value, dict):
+            amount = value.get("amount")
+            if isinstance(amount, dict) and isinstance(amount.get("value"), (int, float)):
+                total += float(amount["value"])
+                currency = str(amount.get("currency") or currency or "usd")
+                found = True
+            elif isinstance(amount, (int, float)):
+                total += float(amount)
+                found = True
+            for key in ("amount_usd", "cost_usd", "total_cost_usd", "cost", "total_cost"):
+                numeric = value.get(key)
+                if isinstance(numeric, (int, float)):
+                    total += float(numeric)
+                    currency = currency or "usd"
+                    found = True
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(data)
+    return (round(total, 6), currency) if found else (None, None)
+
+
+def _month_bounds() -> tuple[str, str]:
+    start = _month_start_datetime()
+    end = datetime.now(UTC) + timedelta(seconds=1)
+    return (
+        start.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        end.isoformat(timespec="seconds").replace("+00:00", "Z"),
+    )
+
+
+def _month_start_datetime() -> datetime:
+    now = datetime.now(UTC)
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _secret(config: AppConfig, name: str) -> str | None:
+    value = os.environ.get(name)
+    if value:
+        return value
+    for env_path in _env_paths(config):
+        loaded = _secret_from_env_file(env_path, name)
+        if loaded:
+            return loaded
+    return None
+
+
+def _env_paths(config: AppConfig) -> list[Path]:
+    paths = []
+    explicit = os.environ.get("DELAMAIN_SECRETS_ENV")
+    if explicit:
+        paths.append(Path(explicit).expanduser())
+    paths.append(Path(__file__).resolve().parent.parent / ".env")
+    paths.append(config.database.path.parent / ".env")
+    return paths
+
+
+def _secret_from_env_file(path: Path, name: str) -> str | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    prefix = f"{name}="
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or not stripped.startswith(prefix):
+            continue
+        return stripped.removeprefix(prefix).strip().strip('"').strip("'")
+    return None

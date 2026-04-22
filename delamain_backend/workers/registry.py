@@ -73,5 +73,15 @@ def default_worker_registry(config: AppConfig) -> WorkerTypeRegistry:
                 host="serrano",
                 cwd=Path("/home/danielju"),
             ),
+            WorkerType(
+                id="winpc_shell",
+                label="WinPC Shell",
+                description="Start a plain bash shell session in WSL tmux on winpc.",
+                command_template=(
+                    "/bin/bash", "--login",
+                ),
+                host="winpc",
+                cwd=Path("/home/daniel"),
+            ),
         ]
     )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from delamain_backend.agent.runner import new_id
@@ -28,12 +30,15 @@ async def create_conversation(
 ):
     conversation_id = new_id("conv")
     model_route = payload.model_route
+    if payload.folder_id is not None:
+        await _require_folder(db, payload.folder_id)
     await db.execute(
         """
         INSERT INTO conversations(
-            id, title, context_mode, model_route, incognito_route, sensitive_unlocked
+            id, title, context_mode, model_route, incognito_route, sensitive_unlocked,
+            folder_id
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             conversation_id,
@@ -42,6 +47,7 @@ async def create_conversation(
             model_route,
             1 if payload.incognito_route else 0,
             0,
+            payload.folder_id,
         ),
     )
     row = await db.fetchone("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
@@ -67,13 +73,22 @@ async def update_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
     title = payload.title if payload.title is not None else row["title"]
     archived = row["archived"] if payload.archived is None else (1 if payload.archived else 0)
+    payload_fields = (
+        payload.model_fields_set if hasattr(payload, "model_fields_set") else payload.__fields_set__
+    )
+    folder_id = payload.folder_id if "folder_id" in payload_fields else row.get("folder_id")
+    if folder_id is not None:
+        await _require_folder(db, folder_id)
     await db.execute(
         """
         UPDATE conversations
-        SET title = ?, archived = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        SET title = ?,
+            archived = ?,
+            folder_id = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ?
         """,
-        (title, archived, conversation_id),
+        (title, archived, folder_id, conversation_id),
     )
     updated = await db.fetchone("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
     return _conversation_out(updated)
@@ -167,52 +182,78 @@ async def submit_prompt(
     message_id = new_id("msg")
     run_id = new_id("run")
     context_mode = payload.context_mode or conversation["context_mode"]
-    model_route = payload.model_route or conversation["model_route"] or config.models.default
+    model_default = await _model_default(db, config)
+    model_route = payload.model_route or conversation["model_route"] or model_default
     incognito_route = (
         payload.incognito_route
         if payload.incognito_route is not None
         else bool(conversation["incognito_route"])
     )
-    await db.execute_transaction(
-        [
+    generated_title = None
+    if await _should_generate_title(db, conversation):
+        generated_title = _title_from_prompt(payload.content)
+        if generated_title == "New conversation":
+            generated_title = None
+    statements = [
+        (
+            """
+            INSERT INTO messages(id, conversation_id, role, content, status)
+            VALUES (?, ?, 'user', ?, 'completed')
+            """,
+            (message_id, conversation_id, payload.content),
+        ),
+        (
+            """
+            INSERT INTO runs(
+                id, conversation_id, user_message_id, status,
+                context_mode, model_route, incognito_route
+            )
+            VALUES (?, ?, ?, 'queued', ?, ?, ?)
+            """,
             (
-                """
-                INSERT INTO messages(id, conversation_id, role, content, status)
-                VALUES (?, ?, 'user', ?, 'completed')
-                """,
-                (message_id, conversation_id, payload.content),
+                run_id,
+                conversation_id,
+                message_id,
+                context_mode,
+                model_route,
+                1 if incognito_route else 0,
             ),
-            (
-                """
-                INSERT INTO runs(
-                    id, conversation_id, user_message_id, status,
-                    context_mode, model_route, incognito_route
-                )
-                VALUES (?, ?, ?, 'queued', ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    conversation_id,
-                    message_id,
-                    context_mode,
-                    model_route,
-                    1 if incognito_route else 0,
-                ),
-            ),
-            (
-                "UPDATE messages SET run_id = ? WHERE id = ?",
-                (run_id, message_id),
-            ),
+        ),
+        (
+            "UPDATE messages SET run_id = ? WHERE id = ?",
+            (run_id, message_id),
+        ),
+        (
+            """
+            UPDATE conversations
+            SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (conversation_id,),
+        ),
+    ]
+    if generated_title:
+        statements.append(
             (
                 """
                 UPDATE conversations
-                SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                SET title = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 WHERE id = ?
                 """,
-                (conversation_id,),
-            ),
-        ]
+                (generated_title, conversation_id),
+            )
+        )
+    await db.execute_transaction(
+        statements
     )
+    if generated_title:
+        await run_manager.bus.emit(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            event_type="conversation.title",
+            payload={"conversation_id": conversation_id, "title": generated_title},
+        )
     position_row = await db.fetchone(
         """
         SELECT COUNT(*) AS count
@@ -250,6 +291,13 @@ async def _require_conversation(db: Database, conversation_id: str) -> dict:
     return row
 
 
+async def _require_folder(db: Database, folder_id: str) -> dict:
+    row = await db.fetchone("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return row
+
+
 def _conversation_out(row: dict, default_model: str | None = None) -> dict:
     return {
         **row,
@@ -258,6 +306,48 @@ def _conversation_out(row: dict, default_model: str | None = None) -> dict:
         "archived": bool(row["archived"]),
         "model_route": row["model_route"] or default_model,
     }
+
+
+async def _should_generate_title(db: Database, conversation: dict) -> bool:
+    title = (conversation.get("title") or "").strip()
+    if title and title.lower() not in {"untitled", "new conversation"}:
+        return False
+    row = await db.fetchone(
+        "SELECT value FROM settings WHERE key = 'title_generation_enabled'"
+    )
+    if row is None:
+        return True
+    try:
+        return bool(json.loads(row["value"]))
+    except json.JSONDecodeError:
+        return True
+
+
+async def _model_default(db: Database, config: AppConfig) -> str:
+    row = await db.fetchone("SELECT value FROM settings WHERE key = 'model_default'")
+    if row is None:
+        return config.models.default
+    try:
+        value = json.loads(row["value"])
+    except json.JSONDecodeError:
+        return config.models.default
+    return value if isinstance(value, str) else config.models.default
+
+
+def _title_from_prompt(content: str) -> str:
+    words = []
+    for raw in content.replace("\n", " ").split():
+        word = raw.strip(" \t\r\n`*_[](){}<>#|")
+        if word:
+            words.append(word)
+        if len(words) >= 8:
+            break
+    title = " ".join(words).strip()
+    if not title:
+        return "New conversation"
+    if len(title) > 72:
+        title = title[:69].rstrip() + "..."
+    return title
 
 
 def _run_out(row: dict) -> dict:

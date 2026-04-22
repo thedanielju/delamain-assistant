@@ -8,7 +8,14 @@ from delamain_backend.tools import default_tool_registry
 def test_tool_registry_exposes_initial_m3_schemas(test_config):
     registry = default_tool_registry(test_config)
     names = {schema["function"]["name"] for schema in registry.schemas("chat_completions")}
-    assert {"get_now", "delamain_ref", "delamain_vault_index", "get_health_status"} <= names
+    assert {
+        "get_now",
+        "delamain_ref",
+        "delamain_vault_index",
+        "get_health_status",
+        "patch_text_file",
+        "run_shell",
+    } <= names
     response_names = {schema["name"] for schema in registry.schemas("responses")}
     assert names == response_names
 
