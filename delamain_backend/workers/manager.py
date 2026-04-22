@@ -479,7 +479,11 @@ def _worker_env(wtype: WorkerType) -> dict[str, str]:
         "HOME": str(Path.home()),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
-        "PATH": "/home/danielju/.local/bin:/usr/local/bin:/usr/bin:/bin",
+        "PATH": (
+            "/home/danielju/.npm-global/bin:"
+            "/home/danielju/.local/bin:"
+            "/usr/local/bin:/usr/bin:/bin"
+        ),
         "TZ": os.environ.get("TZ", "America/New_York"),
         "TERM": "xterm-256color",
         "USER": os.environ.get("USER", "danielju"),

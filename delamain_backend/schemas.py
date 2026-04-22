@@ -53,8 +53,15 @@ class SettingsPatch(BaseModel):
 
 
 class ToolSettingPatch(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    approval_policy: str | None = None
     conversation_id: str | None = None
+
+
+class SyncthingConflictResolveRequest(BaseModel):
+    path: str
+    action: Literal["keep_canonical", "keep_conflict", "keep_both", "stage_review"]
+    note: str | None = None
 
 
 class ContextFilePatch(BaseModel):

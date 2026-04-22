@@ -56,9 +56,29 @@ def default_worker_registry(config: AppConfig) -> WorkerTypeRegistry:
             WorkerType(
                 id="claude_code",
                 label="Claude Code",
-                description="Start a Claude Code agent session on serrano.",
+                description="Start a Claude Code agent session on serrano with permissions bypassed.",
                 command_template=(
-                    "claude",
+                    "claude", "--dangerously-skip-permissions",
+                ),
+                host="serrano",
+                cwd=Path("/home/danielju"),
+            ),
+            WorkerType(
+                id="codex_cli",
+                label="Codex CLI",
+                description="Start a Codex CLI agent session on serrano in YOLO mode.",
+                command_template=(
+                    "codex", "--yolo",
+                ),
+                host="serrano",
+                cwd=Path("/home/danielju"),
+            ),
+            WorkerType(
+                id="gemini_cli",
+                label="Gemini CLI",
+                description="Start a Gemini CLI agent session on serrano in YOLO mode.",
+                command_template=(
+                    "gemini", "--yolo",
                 ),
                 host="serrano",
                 cwd=Path("/home/danielju"),

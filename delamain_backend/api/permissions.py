@@ -60,6 +60,7 @@ async def resolve_permission(
         run_id=updated["run_id"],
         event_type="permission.resolved",
         payload={
+            "run_id": updated["run_id"],
             "permission_id": permission_id,
             "decision": payload.decision,
             "resolver": payload.resolver or "user",

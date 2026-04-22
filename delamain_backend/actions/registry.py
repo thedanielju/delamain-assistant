@@ -16,6 +16,8 @@ class ActionSpec:
     timeout_seconds: float
     writes: bool = False
     remote: bool = False
+    approval_policy_default: str = "auto"
+    risk: str = "low"
 
     def public_dict(self) -> dict:
         return {
@@ -27,6 +29,8 @@ class ActionSpec:
             "timeout_seconds": self.timeout_seconds,
             "writes": self.writes,
             "remote": self.remote,
+            "approval_policy_default": self.approval_policy_default,
+            "risk": self.risk,
         }
 
 
@@ -118,6 +122,7 @@ def default_action_registry(config: AppConfig) -> ActionRegistry:
                 cwd=config.paths.llm_workspace,
                 timeout_seconds=30,
                 writes=True,
+                risk="write",
             ),
             ActionSpec(
                 id="sync_guard.status",
@@ -140,6 +145,14 @@ def default_action_registry(config: AppConfig) -> ActionRegistry:
                 label="Claude Code subscription status",
                 description="Check local Claude Code auth and subscription readiness.",
                 argv=("/bin/bash", "--login", "-lc", "claude --version && claude auth status"),
+                cwd=backend_root,
+                timeout_seconds=8,
+            ),
+            ActionSpec(
+                id="subscription.gemini_status",
+                label="Gemini CLI status",
+                description="Check local Gemini CLI installation/auth readiness.",
+                argv=("/bin/bash", "--login", "-lc", "gemini --version"),
                 cwd=backend_root,
                 timeout_seconds=8,
             ),

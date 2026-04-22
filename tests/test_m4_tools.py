@@ -273,6 +273,40 @@ def test_lock_endpoint_relocks_sensitive_for_later_tool_calls(m4_config):
         assert run["error_code"] == "SENSITIVE_LOCKED"
 
 
+def test_tool_approval_policy_can_pause_and_resume_run(m4_config):
+    call = {
+        "id": "call_now",
+        "name": "get_now",
+        "arguments": {},
+        "source_api_family": "responses",
+        "raw": {},
+    }
+    app = create_app(m4_config, model_client=ToolCallModelClient(call))
+    with TestClient(app) as client:
+        tool_settings = client.patch(
+            "/api/settings/tools/get_now",
+            json={"approval_policy": "confirm"},
+        )
+        assert tool_settings.status_code == 200
+        assert tool_settings.json()["approval_policy"] == "confirm"
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        run_id = client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "what time is it"},
+        ).json()["run_id"]
+        run = _wait_for_status(client, run_id, "waiting_approval")
+        assert run["status"] == "waiting_approval"
+        pending = client.get(f"/api/runs/{run_id}/permissions").json()
+        assert pending[0]["kind"] == "tool"
+        resolved = client.post(
+            f"/api/permissions/{pending[0]['id']}/resolve",
+            json={"decision": "approved", "resolver": "test"},
+        )
+        assert resolved.status_code == 200
+        run = _wait_for_run(client, run_id)
+        assert run["status"] == "completed"
+
+
 def test_model_cannot_unlock_sensitive_by_tool_call(m4_config):
     assert default_tool_registry(m4_config).has_tool("sensitive_unlock") is False
     call = {
@@ -408,6 +442,16 @@ def _wait_for_run(client: TestClient, run_id: str) -> dict:
             return run
         time.sleep(0.05)
     raise AssertionError("run did not finish")
+
+
+def _wait_for_status(client: TestClient, run_id: str, status: str) -> dict:
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        run = client.get(f"/api/runs/{run_id}").json()
+        if run["status"] == status:
+            return run
+        time.sleep(0.05)
+    raise AssertionError(f"run did not reach {status}")
 
 
 def _audit_payloads(db_path, run_id: str) -> list[dict]:

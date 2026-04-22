@@ -46,6 +46,17 @@ Non-secret environment file:
 /home/danielju/.config/delamain/backend.env
 ```
 
+Place provider API keys in the same service env file on serrano:
+
+```dotenv
+OPENROUTER_API_KEY=...
+ANTHROPIC_ADMIN_API_KEY=...
+OPENAI_ADMIN_API_KEY=...
+GOOGLE_API_KEY=...
+```
+
+`OPENROUTER_API_KEY` enables OpenRouter credits, `ANTHROPIC_ADMIN_API_KEY` enables Anthropic organization cost reporting, `OPENAI_ADMIN_API_KEY` enables OpenAI organization costs, and `GOOGLE_API_KEY` is available to Gemini CLI/API tooling if Daniel chooses API-key auth. Restart `delamain-backend.service` after changes.
+
 The service currently keeps real model calls disabled:
 
 ```text
@@ -105,6 +116,7 @@ GET    /api/usage
 GET    /api/usage/subscriptions
 GET    /api/syncthing/summary
 GET    /api/syncthing/conflicts
+POST   /api/syncthing/conflicts/resolve
 GET    /api/folders
 POST   /api/folders
 PATCH  /api/folders/{folder_id}
@@ -238,10 +250,18 @@ Quick actions:
   - `sync_guard.status`
   - `subscription.codex_status`
   - `subscription.claude_status`
+  - `subscription.gemini_status`
   - `winpc.subscription_codex_status`
   - `winpc.subscription_claude_status`
   - `winpc.hostname`
   - `winpc.date`
+
+Syncthing conflict resolution:
+
+- `GET /api/syncthing/summary` and `GET /api/syncthing/conflicts` read Sync Guard reports.
+- `POST /api/syncthing/conflicts/resolve` supports `keep_canonical`, `keep_conflict`, `keep_both`, and `stage_review`.
+- Resolution backups are stored outside Syncthing under `/home/danielju/.local/share/delamain/syncthing-conflict-resolution-backups/` on serrano.
+- `7lf7x-urjpx` is the Syncthing folder ID for the Sensitive vault.
 
 Settings:
 
@@ -253,9 +273,10 @@ Settings:
 - Copilot budget hard threshold enforcement skips Copilot routes and falls back to the configured paid route unless `copilot_budget_hard_override_enabled` is true. Soft threshold emits audit only.
 - `GET /api/usage` exposes Copilot budget, completed call counts for Claude/Codex/OpenRouter, OpenRouter credits when `OPENROUTER_API_KEY` is configured, Anthropic organization cost reporting when `ANTHROPIC_ADMIN_API_KEY` is configured, OpenAI organization cost reporting when `OPENAI_ADMIN_API_KEY` or `OPENAI_API_KEY` is configured, and cached Claude/Codex CLI subscription-auth probes.
 - `GET /api/usage/subscriptions` returns only the cached CLI subscription-auth probes and accepts `?refresh=true`.
-- `GET /api/settings/tools` exposes tool names and enabled state.
-- `PATCH /api/settings/tools/{tool_name}` enables or disables a backend tool.
+- `GET /api/settings/tools` exposes tool names, descriptions, enabled state, risk metadata, and approval policy.
+- `PATCH /api/settings/tools/{tool_name}` enables/disables a backend tool and can set `approval_policy` to `auto` or `confirm`.
 - Disabled tools are omitted from model tool schemas and are denied if called in a tool loop.
+- Tools default to `approval_policy=auto` for autonomous operation. `confirm` pauses the run at `waiting_approval`, emits `permission.requested`, and resumes after the permission is approved.
 - Settings/tool changes emit `audit` events when a `conversation_id` is supplied.
 
 Context files:
@@ -271,7 +292,10 @@ Context files:
 Workers:
 
 - Workers are named tmux sessions managed by the backend.
-- `GET /api/workers/types` lists available worker types: `opencode`, `claude_code`, `shell`, and `winpc_shell`.
+- `GET /api/workers/types` lists available worker types: `opencode`, `claude_code`, `codex_cli`, `gemini_cli`, `shell`, and `winpc_shell`.
+- `claude_code` starts `claude --dangerously-skip-permissions`.
+- `codex_cli` starts `codex --yolo`.
+- `gemini_cli` starts `gemini --yolo`.
 - `POST /api/workers` starts a new worker session; returns immediately with worker metadata.
 - `GET /api/workers` lists all workers; filterable by `?status=` or `?conversation_id=`.
 - `GET /api/workers/{worker_id}` returns worker metadata; `?refresh=true` checks tmux liveness.

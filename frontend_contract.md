@@ -388,6 +388,47 @@ Read-only summary sourced from Sync Guard reports under `llm-workspace/health/sy
 
 Conflict resolution actions are not exposed yet; current endpoints are read-only.
 
+`POST /api/syncthing/conflicts/resolve`
+
+Resolves one conflict file and writes reversible backups under the backend runtime directory, outside Syncthing:
+
+```text
+<database_dir>/syncthing-conflict-resolution-backups/
+```
+
+Body:
+
+```ts
+{
+  path: string
+  action: "keep_canonical" | "keep_conflict" | "keep_both" | "stage_review"
+  note?: string | null
+}
+```
+
+Actions:
+
+- `keep_canonical`: back up the conflict file, then delete the conflict copy.
+- `keep_conflict`: back up canonical and conflict, replace canonical with conflict contents, then delete the conflict copy.
+- `keep_both`: back up the conflict file, copy conflict contents to a non-conflict sibling such as `note.conflict-copy.md`, then delete the conflict copy.
+- `stage_review`: back up canonical/conflict and write a `resolution.json` manifest; source files are not changed.
+
+Response:
+
+```ts
+{
+  status: "resolved" | "staged"
+  action: string
+  path: string
+  canonical_path: string | null
+  result_path: string | null
+  backup_dir: string
+  backups: Array<{ label: string, source: string, backup: string }>
+}
+```
+
+`7lf7x-urjpx` is the Syncthing folder ID for the Sensitive vault. Conflict resolution is an explicit REST/user action and is audited.
+
 ## Quick Actions
 
 `GET /api/actions`
@@ -406,6 +447,7 @@ vault_index.build
 sync_guard.status
 subscription.codex_status
 subscription.claude_status
+subscription.gemini_status
 winpc.subscription_codex_status
 winpc.subscription_claude_status
 winpc.hostname
@@ -465,7 +507,7 @@ Returns `PermissionOut` and emits `permission.resolved`.
 }
 ```
 
-The REST/SSE approval contract exists; current model tools still auto-run enabled tools or hard-deny policy violations instead of producing approval requests.
+Model tools auto-run by default. Each tool can be configured with `approval_policy: "auto" | "confirm"`. In `confirm` mode, the run pauses at `waiting_approval`, emits `permission.requested`, and resumes after `POST /api/permissions/{permission_id}/resolve` approves it. Denial fails that tool call.
 
 ## Settings
 
@@ -487,11 +529,35 @@ Returns Copilot current-month premium request usage and soft/hard threshold stat
 
 `GET /api/settings/tools`
 
-Returns tool enabled state.
+Returns tool enabled state, risk metadata, and approval configurability.
+
+```ts
+{
+  tools: Array<{
+    name: string
+    description: string
+    enabled: boolean
+    risk: "low" | "write" | "shell" | string
+    approval_policy_default: "auto"
+    approval_policy: "auto" | "confirm"
+    approval_policy_options: ["auto", "confirm"]
+  }>
+}
+```
 
 `PATCH /api/settings/tools/{tool_name}`
 
-Enables/disables a backend tool.
+Enables/disables a backend tool and/or changes its approval policy.
+
+Body:
+
+```ts
+{
+  enabled?: boolean
+  approval_policy?: "auto" | "confirm"
+  conversation_id?: string | null
+}
+```
 
 ## Context
 
@@ -519,7 +585,13 @@ Writes short-term continuity with backup and optional audit.
 
 `GET /api/workers/types`
 
-Worker types: `opencode`, `claude_code`, `shell`, `winpc_shell`.
+Worker types: `opencode`, `claude_code`, `codex_cli`, `gemini_cli`, `shell`, `winpc_shell`.
+
+Launch flags:
+
+- `claude_code`: `claude --dangerously-skip-permissions`
+- `codex_cli`: `codex --yolo`
+- `gemini_cli`: `gemini --yolo`
 
 `GET /api/workers`
 

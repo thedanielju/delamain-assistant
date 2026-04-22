@@ -16,7 +16,7 @@ from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
 from delamain_backend.errors import DelamainError, SensitiveLocked, ToolPolicyDenied
 from delamain_backend.events import EventBus
-from delamain_backend.settings_store import disabled_tools
+from delamain_backend.settings_store import disabled_tools, tool_approval_policy
 from delamain_backend.tools import ToolExecutionContext, ToolRegistry, default_tool_registry
 
 
@@ -453,6 +453,18 @@ class RunManager:
             disabled = await disabled_tools(self.db)
             if tool_name in disabled:
                 raise ToolPolicyDenied(f"Tool is disabled by settings: {tool_name}")
+            approval_policy = await tool_approval_policy(
+                self.db,
+                tool_name,
+                self.tool_registry.approval_policy_default(tool_name),
+            )
+            if approval_policy == "confirm":
+                await self._await_tool_permission(
+                    run=run,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
             conversation = await self.db.fetchone(
                 "SELECT sensitive_unlocked FROM conversations WHERE id = ?",
                 (run["conversation_id"],),
@@ -590,6 +602,73 @@ class RunManager:
             (new_id("msg"), run["conversation_id"], run["id"], content, status),
         )
         return content
+
+    async def _await_tool_permission(
+        self,
+        *,
+        run: dict[str, Any],
+        tool_call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> None:
+        permission_id = new_id("perm")
+        details = {
+            "tool_call_id": tool_call_id,
+            "tool": tool_name,
+            "arguments": arguments,
+            "approval_policy": "confirm",
+        }
+        await self.db.execute(
+            """
+            INSERT INTO permissions(
+                id, conversation_id, run_id, kind, summary, details_json
+            )
+            VALUES (?, ?, ?, 'tool', ?, ?)
+            """,
+            (
+                permission_id,
+                run["conversation_id"],
+                run["id"],
+                f"Approve tool call: {tool_name}",
+                json.dumps(details, sort_keys=True),
+            ),
+        )
+        await self.db.execute(
+            """
+            UPDATE runs
+            SET status = 'waiting_approval'
+            WHERE id = ?
+            """,
+            (run["id"],),
+        )
+        await self.bus.emit(
+            conversation_id=run["conversation_id"],
+            run_id=run["id"],
+            event_type="permission.requested",
+            payload={
+                "run_id": run["id"],
+                "permission_id": permission_id,
+                "kind": "tool",
+                "summary": f"Approve tool call: {tool_name}",
+                "details": details,
+            },
+        )
+        while True:
+            if await self._run_is_cancelled(run["id"]):
+                raise ToolPolicyDenied(f"Permission cancelled for tool call: {tool_name}")
+            row = await self.db.fetchone(
+                "SELECT status, decision FROM permissions WHERE id = ?",
+                (permission_id,),
+            )
+            if row and row["status"] == "resolved":
+                if row["decision"] == "approved":
+                    await self.db.execute(
+                        "UPDATE runs SET status = 'running' WHERE id = ?",
+                        (run["id"],),
+                    )
+                    return
+                raise ToolPolicyDenied(f"Permission denied for tool call: {tool_name}")
+            await asyncio.sleep(0.25)
 
     async def _emit_sensitive_access_audit(
         self,

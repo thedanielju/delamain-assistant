@@ -75,6 +75,8 @@ def test_list_worker_types(test_config):
         assert "shell" in type_ids
         assert "opencode" in type_ids
         assert "claude_code" in type_ids
+        assert "codex_cli" in type_ids
+        assert "gemini_cli" in type_ids
         assert "winpc_shell" in type_ids
 
 

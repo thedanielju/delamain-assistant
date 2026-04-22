@@ -14,8 +14,10 @@ from delamain_backend.schemas import SettingsPatch, ToolSettingPatch
 from delamain_backend.settings_store import (
     SETTINGS_DEFAULTS,
     SETTINGS_KEYS,
+    TOOL_APPROVAL_POLICIES,
     disabled_tools,
     set_setting,
+    tool_approval_policies,
 )
 from delamain_backend.tools import default_tool_registry
 
@@ -76,7 +78,7 @@ async def get_tool_settings(
     db: Database = Depends(get_db),
 ):
     registry = default_tool_registry(config)
-    return {"tools": await _tool_settings(db, registry.tool_names())}
+    return {"tools": await _tool_settings(db, registry)}
 
 
 @router.patch("/settings/tools/{tool_name}")
@@ -90,16 +92,34 @@ async def patch_tool_setting(
     registry = default_tool_registry(config)
     if not registry.has_tool(tool_name):
         raise HTTPException(status_code=404, detail="Tool not found")
-    await set_setting(db, f"tool.enabled.{tool_name}", bool(payload.enabled))
+    if payload.enabled is None and payload.approval_policy is None:
+        raise HTTPException(status_code=400, detail="enabled or approval_policy is required")
+    if payload.approval_policy is not None and payload.approval_policy not in TOOL_APPROVAL_POLICIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"approval_policy must be one of {sorted(TOOL_APPROVAL_POLICIES)}",
+        )
+    if payload.enabled is not None:
+        await set_setting(db, f"tool.enabled.{tool_name}", bool(payload.enabled))
+    if payload.approval_policy is not None:
+        await set_setting(db, f"tool.approval_policy.{tool_name}", payload.approval_policy)
     await audit_event(
         db=db,
         bus=bus,
         conversation_id=payload.conversation_id,
         action="settings.tool_updated",
-        summary=f"Tool {tool_name} {'enabled' if payload.enabled else 'disabled'}",
-        payload={"tool": tool_name, "enabled": payload.enabled},
+        summary=f"Tool {tool_name} settings updated",
+        payload={
+            "tool": tool_name,
+            "enabled": payload.enabled,
+            "approval_policy": payload.approval_policy,
+        },
     )
-    return {"tool": tool_name, "enabled": payload.enabled}
+    return {
+        "tool": tool_name,
+        "enabled": payload.enabled,
+        "approval_policy": payload.approval_policy,
+    }
 
 
 async def _settings_payload(config: AppConfig, db: Database) -> dict:
@@ -114,11 +134,24 @@ async def _settings_payload(config: AppConfig, db: Database) -> dict:
     return {"settings": settings}
 
 
-async def _tool_settings(db: Database, tool_names: list[str]) -> list[dict]:
+async def _tool_settings(db: Database, registry) -> list[dict]:
     disabled = await disabled_tools(db)
+    metadata = registry.metadata()
+    policies = await tool_approval_policies(
+        db,
+        {
+            item["name"]: item["approval_policy_default"]
+            for item in metadata
+        },
+    )
     return [
-        {"name": name, "enabled": name not in disabled}
-        for name in sorted(tool_names)
+        {
+            **item,
+            "enabled": item["name"] not in disabled,
+            "approval_policy": policies.get(item["name"], item["approval_policy_default"]),
+            "approval_policy_options": sorted(TOOL_APPROVAL_POLICIES),
+        }
+        for item in metadata
     ]
 
 

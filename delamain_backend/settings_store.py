@@ -13,6 +13,7 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
 }
 SETTINGS_KEYS = set(SETTINGS_DEFAULTS) | {"model_default"}
 DEFAULT_DISABLED_TOOLS = {"run_shell"}
+TOOL_APPROVAL_POLICIES = {"auto", "confirm"}
 
 
 async def disabled_tools(db: Database) -> set[str]:
@@ -26,6 +27,39 @@ async def disabled_tools(db: Database) -> set[str]:
         elif enabled is True:
             disabled.discard(tool_name)
     return disabled
+
+
+async def tool_approval_policy(db: Database, tool_name: str, default: str = "auto") -> str:
+    row = await db.fetchone(
+        "SELECT value FROM settings WHERE key = ?",
+        (f"tool.approval_policy.{tool_name}",),
+    )
+    if row is None:
+        return default
+    try:
+        value = json.loads(row["value"])
+    except json.JSONDecodeError:
+        return default
+    return value if value in TOOL_APPROVAL_POLICIES else default
+
+
+async def tool_approval_policies(
+    db: Database,
+    defaults: dict[str, str],
+) -> dict[str, str]:
+    rows = await db.fetchall(
+        "SELECT key, value FROM settings WHERE key LIKE 'tool.approval_policy.%'"
+    )
+    policies = dict(defaults)
+    for row in rows:
+        tool_name = row["key"].removeprefix("tool.approval_policy.")
+        try:
+            value = json.loads(row["value"])
+        except json.JSONDecodeError:
+            continue
+        if value in TOOL_APPROVAL_POLICIES:
+            policies[tool_name] = value
+    return policies
 
 
 async def set_setting(db: Database, key: str, value: Any) -> None:

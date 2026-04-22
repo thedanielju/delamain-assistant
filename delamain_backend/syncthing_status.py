@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from delamain_backend.config import AppConfig
+from delamain_backend.errors import ToolPolicyDenied
 
 FOLDER_IDS = ("vault-combo", "7lf7x-urjpx", "llm-workspace")
 EXPECTED_DEVICES = ("mac", "serrano", "winpc", "iphone")
@@ -49,6 +53,7 @@ def syncthing_conflicts(config: AppConfig) -> dict[str, Any]:
             entry = grouped.setdefault(
                 path,
                 {
+                    "id": _conflict_id(path),
                     "path": path,
                     "canonical_path": item.get("canonical"),
                     "folder_id": _folder_id_for_path(path),
@@ -69,6 +74,74 @@ def syncthing_conflicts(config: AppConfig) -> dict[str, Any]:
     }
 
 
+def resolve_syncthing_conflict(
+    config: AppConfig,
+    *,
+    path: str,
+    action: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    if action not in {"keep_canonical", "keep_conflict", "keep_both", "stage_review"}:
+        raise ToolPolicyDenied("Unsupported Syncthing conflict resolution action")
+    conflict = _resolve_allowed_path(config, path)
+    if not conflict.exists() or not conflict.is_file():
+        raise ToolPolicyDenied(f"Conflict file not found: {conflict}")
+    canonical = _canonical_for_conflict(conflict)
+    if canonical is not None:
+        canonical = _resolve_allowed_path(config, str(canonical))
+
+    backup_dir = _backup_root(config) / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_dir = backup_dir / f"{action}-{uuid.uuid4().hex[:8]}"
+    backup_dir.mkdir(parents=True, exist_ok=False)
+
+    backups = []
+    backups.append(_backup_file(conflict, backup_dir, "conflict"))
+    if canonical is not None and canonical.exists():
+        backups.append(_backup_file(canonical, backup_dir, "canonical"))
+
+    result_path: Path | None = None
+    if action == "keep_canonical":
+        conflict.unlink()
+    elif action == "keep_conflict":
+        if canonical is None:
+            raise ToolPolicyDenied("Could not infer canonical path for conflict")
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(conflict, canonical)
+        conflict.unlink()
+        result_path = canonical
+    elif action == "keep_both":
+        if canonical is None:
+            raise ToolPolicyDenied("Could not infer canonical path for conflict")
+        result_path = _next_available_path(_both_copy_path(canonical))
+        shutil.copy2(conflict, result_path)
+        conflict.unlink()
+    elif action == "stage_review":
+        result_path = conflict
+
+    manifest = {
+        "action": action,
+        "note": note,
+        "conflict_path": str(conflict),
+        "canonical_path": str(canonical) if canonical is not None else None,
+        "result_path": str(result_path) if result_path is not None else None,
+        "backups": backups,
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    (backup_dir / "resolution.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return {
+        "status": "resolved" if action != "stage_review" else "staged",
+        "action": action,
+        "path": str(conflict),
+        "canonical_path": str(canonical) if canonical is not None else None,
+        "result_path": str(result_path) if result_path is not None else None,
+        "backup_dir": str(backup_dir),
+        "backups": backups,
+    }
+
+
 def _load_reports(config: AppConfig) -> list[dict[str, Any]]:
     base = config.paths.llm_workspace / "health" / "sync-guard" / "hosts"
     reports: list[dict[str, Any]] = []
@@ -83,6 +156,64 @@ def _load_reports(config: AppConfig) -> list[dict[str, Any]]:
             loaded["path"] = path
             reports.append(loaded)
     return reports
+
+
+def _backup_root(config: AppConfig) -> Path:
+    return config.database.path.parent / "syncthing-conflict-resolution-backups"
+
+
+def _backup_file(path: Path, backup_dir: Path, label: str) -> dict[str, Any]:
+    target = backup_dir / f"{label}-{path.name}"
+    shutil.copy2(path, target)
+    return {"label": label, "source": str(path), "backup": str(target)}
+
+
+def _resolve_allowed_path(config: AppConfig, raw: str) -> Path:
+    path = Path(raw).expanduser().resolve(strict=False)
+    roots = (
+        config.paths.vault,
+        config.paths.sensitive,
+        config.paths.llm_workspace,
+    )
+    if not any(_inside(path, root) for root in roots):
+        raise ToolPolicyDenied(f"Path is outside DELAMAIN roots: {path}")
+    return path
+
+
+def _canonical_for_conflict(path: Path) -> Path | None:
+    name = path.name
+    cleaned = re.sub(r"\.sync-conflict-[^.]+", "", name)
+    if cleaned == name:
+        return None
+    return path.with_name(cleaned)
+
+
+def _both_copy_path(canonical: Path) -> Path:
+    return canonical.with_name(f"{canonical.stem}.conflict-copy{canonical.suffix}")
+
+
+def _next_available_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise ToolPolicyDenied(f"Could not find available keep_both path near {path}")
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root.expanduser().resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _conflict_id(path: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
 
 
 def _device_summary(report: dict[str, Any]) -> dict[str, Any]:

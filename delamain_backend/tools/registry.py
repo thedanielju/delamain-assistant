@@ -31,6 +31,8 @@ class ToolDefinition:
     description: str
     parameters: dict[str, Any]
     handler: ToolHandler
+    approval_policy_default: str = "auto"
+    risk: str = "low"
 
     def chat_schema(self) -> dict[str, Any]:
         return {
@@ -76,6 +78,21 @@ class ToolRegistry:
 
     def tool_names(self) -> list[str]:
         return sorted(self._tools)
+
+    def metadata(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "approval_policy_default": tool.approval_policy_default,
+                "risk": tool.risk,
+            }
+            for tool in sorted(self._tools.values(), key=lambda item: item.name)
+        ]
+
+    def approval_policy_default(self, name: str) -> str:
+        tool = self._tools.get(name)
+        return tool.approval_policy_default if tool else "auto"
 
     async def execute(
         self,
@@ -220,6 +237,7 @@ def default_tool_registry(config: AppConfig) -> ToolRegistry:
                 backup_root=config.database.path.parent / "tool-backups",
                 output_limit=config.tools.output_limit_bytes,
             ),
+            risk="write",
         )
     )
     registry.register(
@@ -256,6 +274,7 @@ def default_tool_registry(config: AppConfig) -> ToolRegistry:
                 default_timeout=config.tools.default_timeout_seconds,
                 output_limit=config.tools.output_limit_bytes,
             ),
+            risk="shell",
         )
     )
     registry.register(

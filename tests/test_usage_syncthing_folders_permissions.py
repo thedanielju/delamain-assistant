@@ -35,8 +35,7 @@ def test_usage_endpoint_returns_all_provider_shapes(test_config, monkeypatch):
     with TestClient(app) as client:
         import asyncio
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(
+        asyncio.run(
             app.state.db.execute(
                 """
                 INSERT INTO model_calls(id, run_id, model_route, api_family, status)
@@ -154,6 +153,28 @@ def test_syncthing_endpoints_read_sync_guard_reports(test_config):
     assert conflicts["conflicts"][0]["folder_id"] == "llm-workspace"
 
 
+def test_syncthing_conflict_resolution_keep_both_writes_backup(test_config):
+    canonical = test_config.paths.llm_workspace / "note.md"
+    conflict = test_config.paths.llm_workspace / "note.sync-conflict-20260422-120000-ABC.md"
+    canonical.write_text("canonical", encoding="utf-8")
+    conflict.write_text("conflict", encoding="utf-8")
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        result = client.post(
+            "/api/syncthing/conflicts/resolve",
+            json={"path": str(conflict), "action": "keep_both", "note": "test"},
+        )
+
+    assert result.status_code == 200
+    payload = result.json()
+    assert payload["status"] == "resolved"
+    assert canonical.read_text(encoding="utf-8") == "canonical"
+    kept = test_config.paths.llm_workspace / "note.conflict-copy.md"
+    assert kept.read_text(encoding="utf-8") == "conflict"
+    assert not conflict.exists()
+    assert (test_config.database.path.parent / "syncthing-conflict-resolution-backups").exists()
+
+
 def test_conversation_folders_crud_and_conversation_assignment(test_config):
     app = create_app(test_config)
     with TestClient(app) as client:
@@ -186,8 +207,7 @@ def test_permission_resolution_endpoint_emits_event(test_config):
         _wait_for_run(client, run_id)
         import asyncio
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(
+        asyncio.run(
             app.state.db.execute(
                 """
                 INSERT INTO permissions(
