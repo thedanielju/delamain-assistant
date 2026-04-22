@@ -13,12 +13,13 @@ import { WorkersPanel } from './WorkersPanel'
 import { ContextEditor } from './ContextEditor'
 import { ModelBadge } from './ModelBadge'
 import { RunStatusPill } from './RunStatusPill'
-import { INITIAL_STATE } from '@/lib/sample-data'
-import type { AppState, ChatMessage, Conversation, Worker, ThemeName, RightPanelId, ContextFile } from '@/lib/types'
+import { BackendStatusBanner } from './BackendStatusBanner'
+import { SensitiveLockBadge } from './SensitiveLockBadge'
+import { AuditTrail } from './AuditTrail'
+import { useDelamainBackend } from '@/hooks/useDelamainBackend'
+import type { RightPanelId, ContextFile } from '@/lib/types'
 
-function generateId() {
-  return Math.random().toString(36).slice(2, 10)
-}
+// ── Drag-resize hook ──────────────────────────────────────────────────────────
 
 function useDragResize(initial: number, min: number, max: number, edge: 'right-edge' | 'left-edge') {
   const [width, setWidth] = useState(initial)
@@ -93,9 +94,31 @@ export function PanelHeader({ title, onClose }: { title: string; onClose: () => 
 }
 
 export function ChatLayout() {
-  const [state, setState] = useState<AppState>(INITIAL_STATE)
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [titleDraft, setTitleDraft] = useState('')
+  const {
+    state,
+    editingTitle,
+    titleDraft,
+    setTitleDraft,
+    setEditingTitle,
+    startEditTitle,
+    commitTitle,
+    setState,
+    openPanel,
+    closePanel,
+    toggleLeft,
+    handleSelectConversation,
+    handleNewConversation,
+    handleSend,
+    handleToggleTool,
+    handleUnlockSensitive,
+    handleLockSensitive,
+    handleRunDirectAction,
+    handleWorkerAction,
+    handleStartWorker,
+    handleChangeTheme,
+    handleDismissFile,
+  } = useDelamainBackend()
+
   const [contextEditFile, setContextEditFile] = useState<ContextFile | null>(null)
   const [contextContents, setContextContents] = useState<Record<string, string>>({})
 
@@ -113,66 +136,6 @@ export function ChatLayout() {
     }
   }, [state.theme])
 
-  const openPanel = useCallback((id: RightPanelId) => {
-    setState((s) => ({ ...s, rightPanel: s.rightPanel === id ? null : id }))
-  }, [])
-
-  const closePanel = useCallback(() => {
-    setState((s) => ({ ...s, rightPanel: null }))
-  }, [])
-
-  const toggleLeft = useCallback(() => {
-    setState((s) => ({ ...s, leftSidebarOpen: !s.leftSidebarOpen }))
-  }, [])
-
-  const handleSelectConversation = useCallback((id: string) => {
-    setState((s) => ({ ...s, activeConversationId: id, leftSidebarOpen: false }))
-  }, [])
-
-  const handleNewConversation = useCallback(() => {
-    const id = generateId()
-    const newConv: Conversation = {
-      id,
-      title: 'New conversation',
-      timestamp: 'Just now',
-      messages: [],
-    }
-    setState((s) => ({
-      ...s,
-      conversations: [newConv, ...s.conversations],
-      activeConversationId: id,
-      leftSidebarOpen: false,
-    }))
-  }, [])
-
-  const handleSend = useCallback((content: string) => {
-    const newMsg: ChatMessage = {
-      id: generateId(),
-      role: 'user',
-      content,
-      toolCallsBefore: [],
-    }
-    setState((s) => ({
-      ...s,
-      conversations: s.conversations.map((c) =>
-        c.id === s.activeConversationId
-          ? { ...c, messages: [...c.messages, newMsg] }
-          : c
-      ),
-    }))
-  }, [])
-
-  const handleToggleTool = useCallback((toolId: string) => {
-    setState((s) => ({
-      ...s,
-      tools: s.tools.map((t) => (t.id === toolId ? { ...t, enabled: !t.enabled } : t)),
-    }))
-  }, [])
-
-  const handleDismissFile = useCallback((fileId: string) => {
-    setState((s) => ({ ...s, contextFiles: s.contextFiles.filter((f) => f.id !== fileId) }))
-  }, [])
-
   const handleClickFile = useCallback((file: ContextFile) => {
     setContextEditFile(file)
     if (!contextContents[file.id]) {
@@ -188,73 +151,10 @@ export function ChatLayout() {
     setContextEditFile(null)
   }, [])
 
-  const startEditTitle = useCallback(() => {
-    setTitleDraft(activeConversation?.title ?? '')
-    setEditingTitle(true)
-  }, [activeConversation])
-
-  const commitTitle = useCallback(() => {
-    const trimmed = titleDraft.trim()
-    if (trimmed) {
-      setState((s) => ({
-        ...s,
-        conversations: s.conversations.map((c) =>
-          c.id === s.activeConversationId ? { ...c, title: trimmed } : c
-        ),
-      }))
-    }
-    setEditingTitle(false)
-  }, [titleDraft])
-
-  const handleChangeTheme = useCallback((theme: ThemeName) => {
-    setState((s) => ({ ...s, theme }))
-  }, [])
-
-  const handleRunDirectAction = useCallback((actionId: string) => {
-    setState((s) => ({
-      ...s,
-      directActions: s.directActions.map((a) =>
-        a.id === actionId ? { ...a, status: 'running' } : a
-      ),
-    }))
-    setTimeout(() => {
-      setState((s) => ({
-        ...s,
-        directActions: s.directActions.map((a) =>
-          a.id === actionId
-            ? { ...a, status: 'done', result: `Completed at ${new Date().toLocaleTimeString()}` }
-            : a
-        ),
-      }))
-    }, 1500)
-  }, [])
-
-  const handleWorkerAction = useCallback(
-    (workerId: string, action: 'capture' | 'summarize' | 'stop' | 'kill') => {
-      setState((s) => ({
-        ...s,
-        workers: s.workers.map((w) => {
-          if (w.id !== workerId) return w
-          if (action === 'stop' || action === 'kill') return { ...w, status: 'stopped' as const }
-          if (action === 'capture') return { ...w, status: 'capturing' as const }
-          return w
-        }),
-      }))
-    }, []
-  )
-
-  const handleStartWorker = useCallback((type: Worker['type']) => {
-    const newWorker: Worker = {
-      id: generateId(),
-      name: `${type} session`,
-      type,
-      host: 'local',
-      status: 'running',
-      startedAt: 'Just now',
-      lastActivity: 'Just now',
-    }
-    setState((s) => ({ ...s, workers: [newWorker, ...s.workers] }))
-  }, [])
+  const toggleSensitive = useCallback(() => {
+    if (state.sensitiveUnlocked) handleLockSensitive()
+    else handleUnlockSensitive()
+  }, [state.sensitiveUnlocked, handleLockSensitive, handleUnlockSensitive])
 
   const degradedCount = state.healthEntries.filter(
     (e) => e.status !== 'ok' && e.status !== 'unknown'
@@ -337,6 +237,7 @@ export function ChatLayout() {
             )}
             <ModelBadge model={state.model} />
             <RunStatusPill status={activeConversation?.runStatus} />
+            <SensitiveLockBadge unlocked={state.sensitiveUnlocked} onToggle={toggleSensitive} />
           </div>
 
           <div className="flex items-center gap-0.5">
@@ -387,6 +288,8 @@ export function ChatLayout() {
           </div>
         </header>
 
+        <BackendStatusBanner connection={state.connection} />
+
         <ContextBanner
           mode={state.contextMode}
           files={state.contextFiles}
@@ -396,15 +299,17 @@ export function ChatLayout() {
 
         <ChatPane messages={activeConversation?.messages ?? []} />
 
+        <AuditTrail entries={state.audit} conversationId={state.activeConversationId} />
+
         <InputBar
           onSend={handleSend}
           blankSlate={state.blankSlate}
           incognito={state.incognito}
-          sensitive={state.sensitive}
+          sensitive={state.sensitiveUnlocked}
           directActions={state.directActions}
           onToggleBlankSlate={() => setState((s) => ({ ...s, blankSlate: !s.blankSlate }))}
           onToggleIncognito={() => setState((s) => ({ ...s, incognito: !s.incognito }))}
-          onToggleSensitive={() => setState((s) => ({ ...s, sensitive: !s.sensitive }))}
+          onToggleSensitive={toggleSensitive}
           onRunDirectAction={handleRunDirectAction}
           conversationId={state.activeConversationId}
         />
