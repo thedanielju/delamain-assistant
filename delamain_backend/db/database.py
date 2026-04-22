@@ -103,12 +103,9 @@ class Database:
         return event_row_to_envelope(row)
 
     async def healthcheck(self) -> bool:
-        async with self._write_lock:
-            await self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS healthcheck(value TEXT)")
-            await self.conn.execute("INSERT INTO healthcheck(value) VALUES ('ok')")
-            await self.conn.commit()
-        row = await self.fetchone("SELECT value FROM healthcheck ORDER BY rowid DESC LIMIT 1")
-        return bool(row and row["value"] == "ok")
+        async with self.conn.execute("SELECT 1 AS ok") as cursor:
+            row = await cursor.fetchone()
+        return bool(row and int(row["ok"]) == 1)
 
 
 def event_row_to_envelope(row: dict[str, Any]) -> dict[str, Any]:

@@ -72,6 +72,24 @@ def test_action_run_retrieval_and_artifact_ownership(test_config):
         assert listed.json()[0]["id"] == action_run_id
 
         con = sqlite3.connect(test_config.database.path)
+        original_stdout = con.execute(
+            "SELECT stdout_path FROM action_runs WHERE id = ?", (action_run_id,)
+        ).fetchone()[0]
+        alias = Path(original_stdout).with_name("stdout-alias.txt")
+        try:
+            alias.symlink_to(original_stdout)
+        except OSError:
+            alias = None
+        if alias is not None:
+            con.execute(
+                "UPDATE action_runs SET stdout_path = ? WHERE id = ?",
+                (str(alias), action_run_id),
+            )
+            con.commit()
+            symlinked = client.get(f"/api/action-runs/{action_run_id}/stdout")
+            assert symlinked.status_code == 200
+            assert "delamain-ref" in symlinked.text
+
         con.execute(
             "UPDATE action_runs SET stdout_path = ? WHERE id = ?",
             ("/etc/hostname", action_run_id),

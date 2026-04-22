@@ -67,10 +67,12 @@ async def _get_action_run(db: Database, action_run_id: str) -> dict:
 def _read_owned_artifact(config: AppConfig, row: dict, field: str) -> str:
     output_root = (config.database.path.parent / "action-outputs").resolve(strict=False)
     path = Path(row[field]).expanduser().resolve(strict=False)
-    if path != output_root and output_root not in path.parents:
+    try:
+        path.relative_to(output_root)
+    except ValueError:
         raise HTTPException(status_code=403, detail="Artifact path is outside action output root")
-    if path != Path(row[field]).expanduser():
-        raise HTTPException(status_code=403, detail="Artifact path must be canonical")
+    if path == output_root:
+        raise HTTPException(status_code=403, detail="Artifact path must be a file")
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Artifact not found")
     return path.read_text(encoding="utf-8", errors="replace")

@@ -65,6 +65,20 @@ async def test_read_text_file_tool_reads_allowed_text(m4_config):
     assert result["stdout"] == "hello vault"
 
 
+async def test_read_text_file_reads_only_output_window(m4_config):
+    note = m4_config.paths.vault / "large.md"
+    note.write_text("abcdef", encoding="utf-8")
+    limited = replace(m4_config, tools=replace(m4_config.tools, output_limit_bytes=3))
+    result = await default_tool_registry(limited).execute(
+        "read_text_file",
+        {"path": str(note)},
+        ToolExecutionContext(sensitive_unlocked=False),
+    )
+    assert result["stdout"] == "abc"
+    assert result["byte_count"] == 6
+    assert result["truncated"] is True
+
+
 async def test_read_text_file_tool_blocks_sensitive_when_locked(m4_config):
     secret = m4_config.paths.sensitive / "harmless.md"
     secret.write_text("fixture secret", encoding="utf-8")
@@ -119,6 +133,35 @@ async def test_search_vault_finds_text_and_skips_restricted(m4_config):
     payload = json.loads(result["stdout"])
     assert len(payload["results"]) == 1
     assert payload["results"][0]["path"].endswith("safe.md")
+
+
+async def test_search_vault_uses_vault_index_when_available(m4_config):
+    safe = m4_config.paths.vault / "safe.md"
+    safe.write_text("no direct match needed", encoding="utf-8")
+    env_file = m4_config.paths.vault / ".env"
+    env_file.write_text("needle secret", encoding="utf-8")
+    helper = m4_config.paths.llm_workspace / "bin" / "delamain-vault-index"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    helper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "print(json.dumps({'matches': ["
+        "{'kind': 'note', 'value': 'safe.md'},"
+        "{'kind': 'note', 'value': '.env'},"
+        "{'kind': 'heading', 'value': {'file': 'safe.md', 'heading': 'Needle', 'level': 2, 'anchor': 'needle'}}"
+        "]}))\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    result = await default_tool_registry(m4_config).execute(
+        "search_vault",
+        {"query": "needle", "limit": 10},
+        ToolExecutionContext(sensitive_unlocked=False),
+    )
+    payload = json.loads(result["stdout"])
+    assert payload["source"] == "vault-index"
+    assert len(payload["results"]) == 2
+    assert all(not item["path"].endswith(".env") for item in payload["results"])
 
 
 async def test_search_vault_ignores_symlink_escape(m4_config):

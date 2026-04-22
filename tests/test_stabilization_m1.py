@@ -180,6 +180,29 @@ async def test_event_bus_emit_drops_oldest_when_queue_full(test_config):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_event_bus_reaps_repeatedly_full_subscriber(test_config):
+    db = Database(test_config.database.path)
+    await db.connect()
+    await db.migrate()
+    bus = EventBus(db)
+    await db.execute("INSERT INTO conversations(id, title) VALUES ('conv_reap', 'Reap')")
+    queue = await bus.subscribe(conversation_id="conv_reap")
+    for idx in range(100):
+        queue.put_nowait({"id": -idx, "type": "dummy", "payload": {}})
+
+    for idx in range(bus.drop_reap_threshold):
+        await bus.emit(
+            conversation_id="conv_reap",
+            run_id=None,
+            event_type="audit",
+            payload={"idx": idx},
+        )
+
+    assert queue not in bus._conversation_subscribers.get("conv_reap", set())
+    await db.close()
+
+
 def test_run_fails_on_model_api_family_mismatch(test_config):
     strict_config = replace(
         test_config,
@@ -265,6 +288,20 @@ async def test_database_execute_transaction_rolls_back_on_error(test_config):
     rows = await db.fetchall("SELECT * FROM messages WHERE id = 'msg_tx'")
     await db.close()
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_database_healthcheck_does_not_accumulate_temp_rows(test_config):
+    db = Database(test_config.database.path)
+    await db.connect()
+    await db.migrate()
+    assert await db.healthcheck() is True
+    assert await db.healthcheck() is True
+    row = await db.fetchone(
+        "SELECT name FROM sqlite_temp_master WHERE type = 'table' AND name = 'healthcheck'"
+    )
+    await db.close()
+    assert row is None
 
 
 def _seed_running_run(path):

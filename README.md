@@ -20,6 +20,7 @@ Implemented through M8 worker session scaffold:
 - M5.2 action-run retrieval: action metadata/list endpoints and owned stdout/stderr artifact reads without arbitrary file access.
 - M6 settings/context: persisted settings, model/tool metadata, tool enable/disable enforcement, context file read/update endpoints, runtime backups, and audit events.
 - M8 worker session scaffold: tmux-backed worker lifecycle, worker type registry, start/stop/kill/capture endpoints, DB persistence, conversation-scoped audit events.
+- Post-M8 hardening: vault-index-backed `search_vault`, streaming-window `read_text_file`, SSE stale-subscriber cleanup, temp-table-free healthcheck, cached worker manager/registry, and symlink-tolerant owned artifact reads.
 
 ## Service
 
@@ -155,6 +156,8 @@ Filesystem/Sensitive policy:
 - The model cannot unlock Sensitive by tool call.
 - `.env`, key/token/credential-like files, Syncthing config, private keys, and obvious binary/rich files are blocked.
 - Implemented read-only tools: `read_text_file`, `list_directory`, `search_vault`.
+- `read_text_file` reads only the configured output window plus one byte and reports full file size from `stat()`.
+- `search_vault` uses `delamain-vault-index query <term> --json` when available, filters returned paths through backend path policy, and falls back to direct scanning only if the helper/index path is unavailable.
 - Implemented health tool: `get_health_status`.
 - `write_text_patch` is intentionally not implemented yet.
 
@@ -169,6 +172,7 @@ Quick actions:
 - Spawn/runtime failures terminalize as structured `failed` results with `TOOL_EXECUTION_ERROR`; action runs should not remain stuck in `started`.
 - Action output artifacts are explicitly required to live outside configured Vault, `llm-workspace`, and Sensitive roots.
 - Action-run retrieval serves only stdout/stderr paths owned by persisted `action_runs` rows and refuses arbitrary file reads.
+- Owned artifact reads validate the resolved target remains under the action-output root without rejecting legitimate symlinked path components.
 - Initial action IDs:
   - `health.backend`
   - `health.helpers`
@@ -216,6 +220,7 @@ Workers:
 - Worker start/stop/kill emit `audit` events when a `conversation_id` is supplied.
 - Duplicate worker names are rejected while a worker with that name is running.
 - Only `serrano` host workers are supported initially; `winpc` workers are a future extension.
+- Worker manager and worker type registry are cached for the app lifespan.
 
 Worker statuses:
 

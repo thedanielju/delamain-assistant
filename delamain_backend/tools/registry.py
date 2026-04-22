@@ -186,6 +186,7 @@ def default_tool_registry(config: AppConfig) -> ToolRegistry:
                 ctx,
                 policy=policy,
                 vault_root=config.paths.vault,
+                vault_index_helper=config.paths.llm_workspace / "bin" / "delamain-vault-index",
                 output_limit=config.tools.output_limit_bytes,
             ),
         )
@@ -221,9 +222,11 @@ async def _read_text_file(
     )
     if not decision.path.is_file():
         raise ToolPolicyDenied(f"Path is not a file: {decision.path}")
-    data = decision.path.read_bytes()
-    truncated = len(data) > output_limit
-    text = data[:output_limit].decode("utf-8")
+    size = decision.path.stat().st_size
+    with decision.path.open("rb") as file:
+        data = file.read(output_limit + 1)
+    truncated = size > output_limit or len(data) > output_limit
+    text = data[:output_limit].decode("utf-8", errors="replace")
     return {
         "status": "success",
         "path": str(decision.path),
@@ -231,7 +234,7 @@ async def _read_text_file(
         "stdout": text,
         "stderr": "",
         "duration_ms": int((time.monotonic() - start) * 1000),
-        "byte_count": len(data),
+        "byte_count": size,
         "truncated": truncated,
     }
 
@@ -297,6 +300,7 @@ async def _search_vault(
     *,
     policy: PathPolicy,
     vault_root: Path,
+    vault_index_helper: Path,
     output_limit: int,
 ) -> dict[str, Any]:
     start = time.monotonic()
@@ -310,6 +314,19 @@ async def _search_vault(
         sensitive_unlocked=context.sensitive_unlocked,
         allow_binary=True,
     )
+    indexed = await _search_vault_index(
+        query=query,
+        limit=limit,
+        policy=policy,
+        sensitive_unlocked=context.sensitive_unlocked,
+        vault_root=decision.path,
+        helper=vault_index_helper,
+        output_limit=output_limit,
+    )
+    if indexed is not None:
+        indexed["duration_ms"] = int((time.monotonic() - start) * 1000)
+        return indexed
+
     results: list[dict[str, Any]] = []
     lowered = query.lower()
     for path in sorted(decision.path.rglob("*")):
@@ -354,6 +371,91 @@ async def _search_vault(
         "result_count": len(results),
         "truncated": truncated,
     }
+
+
+async def _search_vault_index(
+    *,
+    query: str,
+    limit: int,
+    policy: PathPolicy,
+    sensitive_unlocked: bool,
+    vault_root: Path,
+    helper: Path,
+    output_limit: int,
+) -> dict[str, Any] | None:
+    if not helper.exists():
+        return None
+    result = await _run_helper(
+        [str(helper), "query", query, "--json"],
+        timeout=30,
+        output_limit=max(output_limit, 1_000_000),
+    )
+    if result["status"] != "success" or result.get("truncated"):
+        return None
+    try:
+        payload = json.loads(result["stdout"])
+    except json.JSONDecodeError:
+        return None
+    matches = payload.get("matches")
+    if not isinstance(matches, list):
+        return None
+
+    results: list[dict[str, Any]] = []
+    for match in matches:
+        if len(results) >= limit:
+            break
+        normalized = _normalize_vault_index_match(match)
+        rel_path = normalized.get("path")
+        if rel_path:
+            candidate = vault_root / rel_path
+            try:
+                decision = policy.check(
+                    str(candidate),
+                    operation="read",
+                    sensitive_unlocked=sensitive_unlocked,
+                    allow_binary=False,
+                )
+            except (ToolPolicyDenied, SensitiveLocked):
+                continue
+            normalized["path"] = str(decision.path)
+        results.append(normalized)
+
+    raw_stdout = json.dumps(
+        {"query": query, "source": "vault-index", "results": results},
+        sort_keys=True,
+    )
+    encoded = raw_stdout.encode("utf-8")
+    truncated = len(encoded) > output_limit
+    stdout = encoded[:output_limit].decode("utf-8", errors="replace")
+    return {
+        "status": "success",
+        "root": "vault",
+        "stdout": stdout,
+        "stderr": "",
+        "result_count": len(results),
+        "truncated": truncated,
+        "source": "vault-index",
+    }
+
+
+def _normalize_vault_index_match(match: Any) -> dict[str, Any]:
+    if not isinstance(match, dict):
+        return {"kind": "unknown", "value": str(match)}
+    kind = str(match.get("kind") or "unknown")
+    value = match.get("value")
+    out: dict[str, Any] = {"kind": kind}
+    if kind == "note" and isinstance(value, str):
+        out["path"] = value
+    elif kind == "heading" and isinstance(value, dict):
+        out["path"] = value.get("file")
+        out["heading"] = value.get("heading")
+        out["level"] = value.get("level")
+        out["anchor"] = value.get("anchor")
+    else:
+        out["value"] = value
+        if "count" in match:
+            out["count"] = match["count"]
+    return out
 
 
 async def _get_health_status(

@@ -49,6 +49,7 @@ async def stream_events(
 
     try:
         max_sent_id = last_event_id
+        keepalive_count = 0
         for row in rows:
             event = event_row_to_envelope(row)
             max_sent_id = max(max_sent_id, event["id"])
@@ -59,9 +60,13 @@ async def stream_events(
                 event = await asyncio.wait_for(queue.get(), timeout=15)
                 if event["id"] <= max_sent_id:
                     continue
+                keepalive_count = 0
                 max_sent_id = event["id"]
                 yield format_sse(event)
             except asyncio.TimeoutError:
+                keepalive_count += 1
                 yield ": keep-alive\n\n"
+                if keepalive_count >= 120:
+                    break
     finally:
         await bus.unsubscribe(queue, conversation_id=conversation_id, run_id=run_id)

@@ -356,6 +356,8 @@ def test_worker_api_endpoints(test_config):
     """Test the REST endpoints via TestClient."""
     app = create_app(test_config)
     with TestClient(app) as client:
+        manager_id = id(app.state.worker_manager)
+
         # List types
         types_resp = client.get("/api/workers/types")
         assert types_resp.status_code == 200
@@ -375,6 +377,7 @@ def test_worker_api_endpoints(test_config):
         # Get nonexistent worker
         not_found = client.get("/api/workers/worker_nonexistent")
         assert not_found.status_code == 404
+        assert id(app.state.worker_manager) == manager_id
 
 
 def test_worker_audit_events(test_config, shell_worker_registry, tmp_path):
