@@ -1,0 +1,284 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'katex/dist/katex.min.css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Delamain OLED palette — always dark */
+  --background: #000000;
+  --foreground: #ffffff;
+
+  --panel: #0a0a0a;
+  --card: #111111;
+  --card-foreground: #e0e0e0;
+
+  --border: rgba(255, 255, 255, 0.06);
+
+  --muted: #888888;
+  --muted-foreground: #888888;
+
+  /* Accents */
+  --accent-blue: #7eb8da;
+  --accent-green: #7ec8a0;
+  --accent-pink: #f4a0b0;
+  --accent-purple: #b8a0e8;
+
+  /* Semantic */
+  --primary: var(--accent-blue);
+  --primary-foreground: #000000;
+
+  /* shadcn compat */
+  --popover: #111111;
+  --popover-foreground: #e0e0e0;
+  --input: #0a0a0a;
+  --ring: rgba(126, 184, 218, 0.4);
+  --radius: 0.5rem;
+
+  --destructive: #e05070;
+  --destructive-foreground: #fff;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent-blue: var(--accent-blue);
+  --color-accent-green: var(--accent-green);
+  --color-accent-pink: var(--accent-pink);
+  --color-accent-purple: var(--accent-purple);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 4px);
+}
+
+/* ── Pastel themes applied via data-theme on <html> ─────────────────────── */
+[data-theme="rose"] {
+  --accent-blue: #f0a0b8;
+  --accent-green: #f0c8a0;
+  --accent-pink: #e87878;
+  --accent-purple: #d8a0d0;
+  --primary: #f0a0b8;
+  --ring: rgba(240, 160, 184, 0.35);
+}
+[data-theme="mint"] {
+  --accent-blue: #78d8b8;
+  --accent-green: #a0e8a0;
+  --accent-pink: #b8e8c8;
+  --accent-purple: #88d0c0;
+  --primary: #78d8b8;
+  --ring: rgba(120, 216, 184, 0.35);
+}
+[data-theme="lavender"] {
+  --accent-blue: #c0a8f0;
+  --accent-green: #a8c0e8;
+  --accent-pink: #e0b8f0;
+  --accent-purple: #d0a8e8;
+  --primary: #c0a8f0;
+  --ring: rgba(192, 168, 240, 0.35);
+}
+[data-theme="peach"] {
+  --accent-blue: #f0c890;
+  --accent-green: #d8e890;
+  --accent-pink: #f0a878;
+  --accent-purple: #e8b0a0;
+  --primary: #f0c890;
+  --ring: rgba(240, 200, 144, 0.35);
+}
+[data-theme="sky"] {
+  --accent-blue: #90d0f0;
+  --accent-green: #90e8d8;
+  --accent-pink: #a8c8f0;
+  --accent-purple: #b0d0e8;
+  --primary: #90d0f0;
+  --ring: rgba(144, 208, 240, 0.35);
+}
+[data-theme="mauve"] {
+  --accent-blue: #c8a8d8;
+  --accent-green: #a8c8b8;
+  --accent-pink: #e0b0c8;
+  --accent-purple: #d0b8e0;
+  --primary: #c8a8d8;
+  --ring: rgba(200, 168, 216, 0.35);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    box-sizing: border-box;
+  }
+
+  html, body {
+    background-color: #000000;
+    color: #ffffff;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* Thin dark scrollbars */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.22);
+  }
+}
+
+/* Streaming cursor pulse */
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.streaming-cursor::after {
+  content: '▋';
+  display: inline-block;
+  animation: cursor-blink 1s step-end infinite;
+  color: var(--accent-blue);
+  margin-left: 1px;
+  font-size: 0.85em;
+  vertical-align: middle;
+}
+
+/* Status dot pulse */
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+.dot-pulse {
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+
+/* Markdown prose styles for assistant messages */
+.assistant-prose {
+  color: #e0e0e0;
+  line-height: 1.65;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+.assistant-prose h1,
+.assistant-prose h2,
+.assistant-prose h3,
+.assistant-prose h4 {
+  color: #ffffff;
+  font-weight: 600;
+  margin: 1em 0 0.4em;
+  line-height: 1.3;
+  font-family: var(--font-sans);
+}
+
+.assistant-prose h1 { font-size: 1.15rem; }
+.assistant-prose h2 { font-size: 1.05rem; }
+.assistant-prose h3 { font-size: 0.95rem; }
+
+.assistant-prose p { margin: 0.5em 0; }
+
+.assistant-prose strong { color: #ffffff; font-weight: 600; }
+.assistant-prose em { color: #c0c8d0; font-style: italic; }
+
+.assistant-prose a {
+  color: var(--accent-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.assistant-prose ul,
+.assistant-prose ol {
+  margin: 0.4em 0 0.4em 1.4em;
+}
+
+.assistant-prose li { margin: 0.15em 0; }
+
+/* Tables */
+.assistant-prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.75em 0;
+  font-size: 0.8rem;
+}
+
+.assistant-prose th {
+  background: #111111;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 0.4em 0.75em;
+  border: 1px solid rgba(255,255,255,0.1);
+  text-align: left;
+}
+
+.assistant-prose td {
+  padding: 0.35em 0.75em;
+  border: 1px solid rgba(255,255,255,0.06);
+  color: #d0d0d0;
+}
+
+.assistant-prose tr:nth-child(even) td {
+  background: rgba(255,255,255,0.02);
+}
+
+/* Inline code */
+.assistant-prose code {
+  background: #1a1a1a;
+  color: var(--accent-green);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.82em;
+  font-family: var(--font-mono);
+}
+
+/* Code blocks — overridden by ToolCallCard and SyntaxBlock */
+.assistant-prose pre {
+  background: #0d0d0d;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.6em 0;
+  position: relative;
+}
+
+.assistant-prose pre code {
+  background: transparent;
+  color: #d4d4d4;
+  padding: 0.8em 1em;
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+/* highlight.js dark theme override */
+.hljs {
+  background: transparent !important;
+  color: #d4d4d4;
+}
+
+/* KaTeX display mode centering */
+.katex-display {
+  overflow-x: auto;
+  padding: 0.5em 0;
+}
