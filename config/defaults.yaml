@@ -1,0 +1,26 @@
+server:
+  host: "127.0.0.1"
+  port: 8420
+database:
+  path: "/home/danielju/.local/share/delamain/conversations.sqlite"
+paths:
+  vault: "/home/danielju/Vault"
+  sensitive: "/home/danielju/Obsidian Sensitive"
+  llm_workspace: "/home/danielju/llm-workspace"
+models:
+  default: "github_copilot/gpt-5.4-mini"
+  fallback_high_volume: "github_copilot/gpt-5-mini"
+  fallback_cheap: "github_copilot/claude-haiku-4.5"
+  paid_fallback: "openrouter/deepseek/deepseek-v3.2"
+copilot_budget:
+  monthly_premium_requests: 300
+  soft_threshold_percent: 60
+  hard_threshold_percent: 90
+tools:
+  max_tool_iterations: 8
+  default_timeout_seconds: 60
+  output_limit_bytes: 200000
+runtime:
+  enable_model_calls: false
+  disable_model_fallbacks: false
+  model_timeout_seconds: 30
