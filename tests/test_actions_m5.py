@@ -384,6 +384,8 @@ async def test_action_runner_rejects_output_root_under_synced_roots(test_config)
         models=test_config.models,
         tools=test_config.tools,
         runtime=test_config.runtime,
+        auth=test_config.auth,
+        maintenance=test_config.maintenance,
     )
     db = Database(test_config.database.path)
     await db.connect()

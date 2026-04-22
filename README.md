@@ -21,6 +21,7 @@ Implemented through M8 worker session scaffold:
 - M6 settings/context: persisted settings, model/tool metadata, tool enable/disable enforcement, context file read/update endpoints, runtime backups, and audit events.
 - M8 worker session scaffold: tmux-backed worker lifecycle, worker type registry, start/stop/kill/capture endpoints, DB persistence, conversation-scoped audit events.
 - Post-M8 hardening: vault-index-backed `search_vault`, streaming-window `read_text_file`, SSE stale-subscriber cleanup, temp-table-free healthcheck, cached worker manager/registry, and symlink-tolerant owned artifact reads.
+- Operational hardening: startup worker reconciliation, startup retention cleanup for action outputs/context backups, and optional Cloudflare Access JWT enforcement.
 
 ## Service
 
@@ -49,6 +50,23 @@ The service currently keeps real model calls disabled:
 ```text
 DELAMAIN_ENABLE_MODEL_CALLS=0
 ```
+
+Auth defaults to local/Tailscale development mode:
+
+```text
+DELAMAIN_AUTH_MODE=dev_local
+```
+
+For production behind Cloudflare Access, set:
+
+```text
+DELAMAIN_AUTH_MODE=access_required
+DELAMAIN_AUTH_ALLOWED_EMAIL=<Daniel's allowed Google email>
+DELAMAIN_CF_ACCESS_TEAM_DOMAIN=https://<team-name>.cloudflareaccess.com
+DELAMAIN_CF_ACCESS_AUDIENCE=<Cloudflare Access application AUD tag>
+```
+
+The backend validates the `Cf-Access-Jwt-Assertion` header against Cloudflare Access signing keys in `access_required` mode.
 
 ## API Contract
 
@@ -221,6 +239,7 @@ Workers:
 - Duplicate worker names are rejected while a worker with that name is running.
 - Only `serrano` host workers are supported initially; `winpc` workers are a future extension.
 - Worker manager and worker type registry are cached for the app lifespan.
+- Backend startup reconciles persisted `running`/`starting`/`stopping` workers against live tmux sessions and marks dead sessions `stopped`.
 
 Worker statuses:
 
@@ -231,6 +250,20 @@ stopping
 stopped
 failed
 ```
+
+Maintenance:
+
+- Startup cleanup removes action-output artifact directories older than `DELAMAIN_ACTION_OUTPUT_RETENTION_DAYS`, default `30`.
+- Startup cleanup removes context backup files older than `DELAMAIN_CONTEXT_BACKUP_RETENTION_DAYS`, default `30`.
+- SQLite metadata remains durable; old artifact URLs may return `404` after retention cleanup.
+
+Auth deployment:
+
+- Public access should stay behind Cloudflare Access and nginx/Cloudflare Tunnel.
+- Cloudflare Access should use Google as the identity provider, Daniel's Google account as the only allowed identity, and a 30-day application/session duration.
+- Passkey behavior is handled by Google account sign-in: Apple devices can use iCloud Keychain passkeys / Face ID / Touch ID where available, while non-Apple devices can use normal Google login.
+- nginx must forward `CF-Access-JWT-Assertion` to FastAPI as `CF-Access-JWT-Assertion` or `Cf-Access-Jwt-Assertion`.
+- Keep `DELAMAIN_AUTH_MODE=dev_local` until the Access application AUD tag and team domain are configured.
 
 ## Curl Examples
 

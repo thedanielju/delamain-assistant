@@ -12,6 +12,8 @@ from delamain_backend.config import AppConfig, load_config
 from delamain_backend.db import Database
 from delamain_backend.dependencies import assert_litellm_version_allowed
 from delamain_backend.events import EventBus
+from delamain_backend.maintenance import run_startup_cleanup
+from delamain_backend.security.auth import CloudflareAccessValidator, install_auth_middleware
 from delamain_backend.workers import WorkerManager, default_worker_registry
 
 
@@ -53,7 +55,9 @@ def create_app(config: AppConfig | None = None, model_client: ModelClient | None
         app.state.worker_registry = worker_registry
         app.state.worker_manager = worker_manager
         app.state.event_reaper_task = asyncio.create_task(_reap_event_subscribers(bus))
+        app.state.startup_cleanup = run_startup_cleanup(loaded_config)
         await run_manager.recover_on_startup()
+        app.state.worker_reconciliation = await worker_manager.reconcile_on_startup()
         try:
             yield
         finally:
@@ -65,6 +69,7 @@ def create_app(config: AppConfig | None = None, model_client: ModelClient | None
             await db.close()
 
     app = FastAPI(title="DELAMAIN Backend", version="0.1.0", lifespan=lifespan)
+    install_auth_middleware(app, CloudflareAccessValidator((config or load_config()).auth))
     app.include_router(api_router)
     return app
 

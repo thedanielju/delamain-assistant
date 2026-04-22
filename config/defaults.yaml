@@ -24,3 +24,12 @@ runtime:
   enable_model_calls: false
   disable_model_fallbacks: false
   model_timeout_seconds: 30
+auth:
+  mode: "dev_local"
+  allowed_email: ""
+  cloudflare_access_team_domain: ""
+  cloudflare_access_audience: ""
+  cloudflare_access_jwks_url: ""
+maintenance:
+  action_output_retention_days: 30
+  context_backup_retention_days: 30

@@ -308,6 +308,40 @@ class WorkerManager:
                 )
         return await self._worker_out(worker_id)
 
+    async def reconcile_on_startup(self) -> dict[str, int]:
+        rows = await self.db.fetchall(
+            "SELECT * FROM workers WHERE status IN ('running', 'starting', 'stopping')"
+        )
+        alive = 0
+        stopped = 0
+        for row in rows:
+            session_alive = await self._session_alive(row["tmux_session"])
+            if session_alive:
+                alive += 1
+                if row["status"] == "starting":
+                    await self.db.execute(
+                        """
+                        UPDATE workers
+                        SET status = 'running',
+                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                        WHERE id = ?
+                        """,
+                        (row["id"],),
+                    )
+                continue
+            stopped += 1
+            await self.db.execute(
+                """
+                UPDATE workers
+                SET status = 'stopped',
+                    stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (row["id"],),
+            )
+        return {"checked": len(rows), "alive": alive, "stopped": stopped}
+
     async def _session_alive(self, session_name: str) -> bool:
         try:
             proc = await asyncio.create_subprocess_exec(

@@ -59,6 +59,37 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class AuthConfig:
+    mode: str
+    allowed_email: str
+    cloudflare_access_team_domain: str
+    cloudflare_access_audience: str
+    cloudflare_access_jwks_url: str
+
+    @property
+    def issuer(self) -> str:
+        domain = self.cloudflare_access_team_domain.strip().rstrip("/")
+        if not domain:
+            return ""
+        if domain.startswith("https://"):
+            return domain
+        return f"https://{domain}"
+
+    @property
+    def jwks_url(self) -> str:
+        if self.cloudflare_access_jwks_url:
+            return self.cloudflare_access_jwks_url
+        issuer = self.issuer
+        return f"{issuer}/cdn-cgi/access/certs" if issuer else ""
+
+
+@dataclass(frozen=True)
+class MaintenanceConfig:
+    action_output_retention_days: int
+    context_backup_retention_days: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerConfig
     database: DatabaseConfig
@@ -66,6 +97,8 @@ class AppConfig:
     models: ModelsConfig
     tools: ToolsConfig
     runtime: RuntimeConfig
+    auth: AuthConfig
+    maintenance: MaintenanceConfig
 
 
 def _project_root() -> Path:
@@ -104,6 +137,8 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     models = raw.get("models", {})
     tools = raw.get("tools", {})
     runtime = raw.get("runtime", {})
+    auth = raw.get("auth", {})
+    maintenance = raw.get("maintenance", {})
 
     db_path = Path(os.environ.get("DELAMAIN_DB_PATH", database["path"])).expanduser()
     enable_model_calls = _as_bool(
@@ -144,5 +179,43 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
             enable_model_calls=enable_model_calls,
             disable_model_fallbacks=disable_model_fallbacks,
             model_timeout_seconds=model_timeout_seconds,
+        ),
+        auth=AuthConfig(
+            mode=str(os.environ.get("DELAMAIN_AUTH_MODE", auth.get("mode", "dev_local"))),
+            allowed_email=str(
+                os.environ.get("DELAMAIN_AUTH_ALLOWED_EMAIL", auth.get("allowed_email", ""))
+            ),
+            cloudflare_access_team_domain=str(
+                os.environ.get(
+                    "DELAMAIN_CF_ACCESS_TEAM_DOMAIN",
+                    auth.get("cloudflare_access_team_domain", ""),
+                )
+            ),
+            cloudflare_access_audience=str(
+                os.environ.get(
+                    "DELAMAIN_CF_ACCESS_AUDIENCE",
+                    auth.get("cloudflare_access_audience", ""),
+                )
+            ),
+            cloudflare_access_jwks_url=str(
+                os.environ.get(
+                    "DELAMAIN_CF_ACCESS_JWKS_URL",
+                    auth.get("cloudflare_access_jwks_url", ""),
+                )
+            ),
+        ),
+        maintenance=MaintenanceConfig(
+            action_output_retention_days=int(
+                os.environ.get(
+                    "DELAMAIN_ACTION_OUTPUT_RETENTION_DAYS",
+                    maintenance.get("action_output_retention_days", 30),
+                )
+            ),
+            context_backup_retention_days=int(
+                os.environ.get(
+                    "DELAMAIN_CONTEXT_BACKUP_RETENTION_DAYS",
+                    maintenance.get("context_backup_retention_days", 30),
+                )
+            ),
         ),
     )

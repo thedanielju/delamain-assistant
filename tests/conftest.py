@@ -9,7 +9,9 @@ from delamain_backend.config import (
     AppConfig,
     DatabaseConfig,
     ModelsConfig,
+    AuthConfig,
     PathsConfig,
+    MaintenanceConfig,
     RuntimeConfig,
     ServerConfig,
     ToolsConfig,
@@ -58,6 +60,17 @@ def test_config(tmp_path: Path) -> AppConfig:
             enable_model_calls=False,
             disable_model_fallbacks=False,
             model_timeout_seconds=30,
+        ),
+        auth=AuthConfig(
+            mode="dev_local",
+            allowed_email="daniel@example.test",
+            cloudflare_access_team_domain="",
+            cloudflare_access_audience="",
+            cloudflare_access_jwks_url="",
+        ),
+        maintenance=MaintenanceConfig(
+            action_output_retention_days=30,
+            context_backup_retention_days=30,
         ),
     )
 

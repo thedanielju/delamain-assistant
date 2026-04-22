@@ -316,6 +316,44 @@ def test_refresh_detects_dead_session(test_config, shell_worker_registry, tmp_pa
             socket_path.unlink()
 
 
+def test_reconcile_on_startup_marks_dead_workers_stopped(test_config, shell_worker_registry, tmp_path):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        from delamain_backend.workers.manager import WorkerManager
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        worker_id = "worker_dead_reconcile"
+        loop.run_until_complete(
+            app.state.db.execute(
+                """
+                INSERT INTO workers(
+                    id, name, worker_type, host, tmux_session, tmux_socket, command, status
+                ) VALUES (?, 'dead-worker', 'test_shell', 'serrano', 'missing-session', ?, '', 'running')
+                """,
+                (worker_id, str(socket_path)),
+            )
+        )
+
+        result = loop.run_until_complete(mgr.reconcile_on_startup())
+        assert result["checked"] == 1
+        assert result["stopped"] == 1
+        row = loop.run_until_complete(mgr.get_worker(worker_id))
+        assert row["status"] == "stopped"
+        assert row["stopped_at"] is not None
+
+        if socket_path.exists():
+            socket_path.unlink()
+
+
 def test_conversation_scoped_worker_list(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"
     app = create_app(test_config)
