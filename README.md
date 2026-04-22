@@ -21,7 +21,7 @@ Implemented through M8 worker session scaffold:
 - M6 settings/context: persisted settings, model/tool metadata, tool enable/disable enforcement, context file read/update endpoints, runtime backups, and audit events.
 - M8 worker session scaffold: tmux-backed worker lifecycle, worker type registry, start/stop/kill/capture endpoints, DB persistence, conversation-scoped audit events.
 - Post-M8 hardening: vault-index-backed `search_vault`, streaming-window `read_text_file`, SSE stale-subscriber cleanup, temp-table-free healthcheck, cached worker manager/registry, and symlink-tolerant owned artifact reads.
-- Operational hardening: startup worker reconciliation, startup retention cleanup for action outputs/context backups, and optional Cloudflare Access JWT enforcement.
+- Operational hardening: startup worker reconciliation, startup retention cleanup for action outputs/context backups, and Cloudflare Access JWT enforcement for deployed API traffic.
 
 ## Service
 
@@ -51,13 +51,13 @@ The service currently keeps real model calls disabled:
 DELAMAIN_ENABLE_MODEL_CALLS=0
 ```
 
-Auth defaults to local/Tailscale development mode:
+The deployed serrano service currently keeps Cloudflare Access auth enabled:
 
 ```text
-DELAMAIN_AUTH_MODE=dev_local
+DELAMAIN_AUTH_MODE=access_required
 ```
 
-For production behind Cloudflare Access, set:
+Required Cloudflare Access env vars:
 
 ```text
 DELAMAIN_AUTH_MODE=access_required
@@ -67,6 +67,25 @@ DELAMAIN_CF_ACCESS_AUDIENCE=<Cloudflare Access application AUD tag>
 ```
 
 The backend validates the `Cf-Access-Jwt-Assertion` header against Cloudflare Access signing keys in `access_required` mode.
+
+Public browser/API ingress is:
+
+```text
+https://term.danielju.com
+  -> Cloudflare Access
+  -> Cloudflare Tunnel
+  -> nginx on serrano at http://127.0.0.1:8088
+  -> /api/ to FastAPI at http://127.0.0.1:8420
+  -> / to ttyd until the Next.js frontend replaces that route
+```
+
+Frontend code should use same-origin `/api/...` requests from `term.danielju.com`, not `127.0.0.1:8420`.
+
+For local development without Cloudflare Access, explicitly set:
+
+```text
+DELAMAIN_AUTH_MODE=dev_local
+```
 
 ## API Contract
 
