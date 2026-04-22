@@ -489,6 +489,9 @@ def _worker_env(wtype: WorkerType) -> dict[str, str]:
         "USER": os.environ.get("USER", "danielju"),
         "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
     }
+    for key in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
     env.update(wtype.env_extras)
     return env
 
