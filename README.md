@@ -1,32 +1,337 @@
-# DELAMAIN Backend
+# DELAMAIN
 
-Phase 2 backend vertical slice for DELAMAIN.
+DELAMAIN is Daniel Ju's personal browser-based LLM assistant. It combines a FastAPI backend, a Next.js chat frontend, deterministic local tools, vault-aware context handling, guarded Sensitive access, usage and subscription visibility, Syncthing status, and tmux-backed worker sessions across `serrano` and `winpc`.
 
-The backend runs on `serrano`, binds to `127.0.0.1:8420`, stores SQLite runtime data outside Syncthing at `/home/danielju/.local/share/delamain/conversations.sqlite`, and uses LiteLLM only as a model gateway.
+This repository contains the Phase 2 application code for both the backend and the frontend.
 
-Real model calls are disabled by default. Set `DELAMAIN_ENABLE_MODEL_CALLS=1` only for explicit Copilot/LiteLLM tests.
+The detailed operational source of truth lives in Daniel's Obsidian vault under `Projects/DELAMAIN/`. This README is the repo-local overview and tutorial.
 
-## Current Scope
+## Contents
 
-Implemented through M8 worker session scaffold:
+- [What DELAMAIN Is](#what-delamain-is)
+- [What This Repository Contains](#what-this-repository-contains)
+- [Current Status](#current-status)
+- [Architecture](#architecture)
+- [Key Features](#key-features)
+- [Repository Layout](#repository-layout)
+- [Using DELAMAIN](#using-delamain)
+- [Local Development](#local-development)
+- [Deployment on Serrano](#deployment-on-serrano)
+- [Security Model](#security-model)
+- [Testing](#testing)
+- [Important Documents](#important-documents)
 
-- M0 scaffold: config, migrations, SQLite path, health endpoint, LiteLLM known-bad version block.
-- M1 conversations/runs/events: create/list/fetch/update/delete conversations, prompt submission, background runs, event persistence, SSE replay/live stream, retry/cancel endpoints.
-- M2 LiteLLM router: route-family selection, result normalization, usage events, explicit fallback logging.
-- M3 first tool loop: API-family-specific tool schemas, tool-call normalization, `get_now`, `delamain_ref`, `delamain_vault_index`, tool events, output caps, max-iteration guard.
-- M4 narrow read-only policy: path canonicalization, allowed roots, explicit Sensitive lock/unlock endpoints, Sensitive access audit events, `read_text_file`, `list_directory`, and `search_vault`.
-- M5 starter health tool: `get_health_status` aggregates deterministic helper/path status.
-- M5.1 quick actions: fixed action registry, `/api/actions`, structured command execution, minimal environment, timeout handling, exit-code capture, full stdout/stderr artifacts in app data, preview fields, and audit events.
-- M5.2 action-run retrieval: action metadata/list endpoints and owned stdout/stderr artifact reads without arbitrary file access.
-- M6 settings/context: persisted settings, model/tool metadata, tool enable/disable enforcement, context file read/update endpoints, runtime backups, and audit events.
-- M8 worker session scaffold: tmux-backed worker lifecycle, worker type registry, start/stop/kill/capture endpoints, DB persistence, conversation-scoped audit events.
-- Post-M8 hardening: vault-index-backed `search_vault`, streaming-window `read_text_file`, SSE stale-subscriber cleanup, temp-table-free healthcheck, cached worker manager/registry, and symlink-tolerant owned artifact reads.
-- Operational hardening: startup worker reconciliation, startup retention cleanup for action outputs/context backups, and Cloudflare Access JWT enforcement for deployed API traffic.
-- Frontend contract support: conversation folders, usage aggregation, Claude/Codex subscription-auth probes, OpenRouter credits, read-only Syncthing status/conflict endpoints, permission approval REST/SSE shapes, and machine-readable stale-auth responses.
+## What DELAMAIN Is
 
-## Service
+DELAMAIN is not a generic chatbot product. It is a personal assistant system designed around Daniel's actual working environment:
 
-Installed as a user service on serrano:
+- an Obsidian-based knowledge base
+- a synced `llm-workspace`
+- a separate Sensitive vault
+- deterministic helper tools for references, indexing, and sync health
+- a persistent Linux host on `serrano`
+- a Windows machine on `winpc`
+
+The goal is a practical assistant that can:
+
+- hold long-running conversations
+- stream responses in the browser
+- safely inspect Daniel's vault and workspace
+- expose deterministic quick actions for operational checks
+- show usage and subscription status for the model providers Daniel actually uses
+- coordinate worker sessions on `serrano` and `winpc`
+- keep a strict boundary around Sensitive data
+
+## What This Repository Contains
+
+This repository includes:
+
+1. `delamain_backend/`
+   - the FastAPI backend
+   - routing, persistence, SSE, settings, permissions, tool policy, Syncthing, usage, workers, and auth
+
+2. `frontend/`
+   - the Next.js frontend
+   - conversation UI, settings UI, health and usage panels, Syncthing panel, workers panel, context editor, and direct actions
+
+3. `tests/`
+   - backend regression and contract tests
+
+4. `frontend_contract.md`
+   - the repo-local copy of the current frontend/backend API contract
+
+## Current Status
+
+As of 2026-04-23:
+
+- the backend contract described for Phase 2 is implemented in this repo
+- the frontend is wired against that contract
+- the production backend on `serrano` runs on `127.0.0.1:8420`
+- a dev-local backend sidecar runs on `127.0.0.1:8421`
+- the `serrano` frontend service runs on `127.0.0.1:3000`
+- `chat.danielju.com` serves the Next.js frontend
+- `term.danielju.com` remains the Cloudflare Access protected admin and ttyd surface
+
+Important deployment note:
+
+- the public frontend currently rewrites same-origin `/api/*` to the dev-local backend sidecar on `8421`
+- the hardened production backend with Cloudflare Access enforcement remains on `8420`
+
+So the code is in place, but the final public ingress path is still in a transitional state.
+
+## Architecture
+
+### Backend
+
+The backend is a FastAPI app with:
+
+- SQLite persistence
+- background run processing
+- SSE replay and live streaming
+- LiteLLM model routing
+- tool-call persistence
+- deterministic quick actions
+- context file read and guarded write support
+- per-tool approval policies
+- permission request and resolve flows
+- usage, subscription, and Syncthing reporting
+- worker session lifecycle management
+
+### Frontend
+
+The frontend is a Next.js application that provides:
+
+- conversation list and nested folders
+- streamed chat UI
+- run controls
+- tool and permission surfaces
+- settings and model route controls
+- health, usage, Syncthing, and workers panels
+- direct action shortcuts
+- context editing for the supported context files
+
+### Storage and Runtime Data
+
+The application code lives in this repository, but runtime state is intentionally kept outside Syncthing on `serrano`.
+
+Important runtime locations:
+
+- backend database:
+  - `/home/danielju/.local/share/delamain/conversations.sqlite`
+- backend action artifacts:
+  - `/home/danielju/.local/share/delamain/action-outputs/`
+- context backups:
+  - `/home/danielju/.local/share/delamain/context-backups/`
+
+### Machines
+
+- `serrano`
+  - primary Linux host
+  - backend service
+  - frontend service
+  - ttyd
+  - tmux workers
+
+- `winpc`
+  - Windows-side helper host
+  - WSL worker target
+  - remote shell target for specific quick actions and worker types
+
+## Key Features
+
+### Conversations and Runs
+
+- create, update, archive, move, and delete conversations
+- nested folders with cycle prevention
+- queue and background execution for runs
+- SSE streaming with replay support via `Last-Event-ID`
+- cancel and retry controls
+
+### Vault and Context Handling
+
+- normal and blank-slate context modes
+- current context inspection
+- editable `system-context`
+- editable `short-term-continuity`
+- backend-enforced path policy for vault and workspace access
+
+### Sensitive Access
+
+- Sensitive is locked by default per conversation
+- unlock and lock are explicit REST actions
+- Sensitive access attempts are audited
+- the model does not get an unlock tool
+
+### Deterministic Quick Actions
+
+Examples include:
+
+- backend health
+- helper health
+- reference status
+- vault index status and build
+- sync guard status
+- subscription status for Codex, Claude Code, and Gemini
+- WinPC hostname and date
+
+### Usage and Subscription Visibility
+
+- Copilot budget reporting
+- usage provider summaries
+- subscription and auth probes for Codex, Claude Code, and Gemini
+
+### Syncthing Visibility
+
+- summary by device
+- conflict listing
+- conflict resolution endpoints
+- expected device rows including local and iPhone probe-only presence
+
+### Workers
+
+- `serrano` shell workers
+- `winpc` WSL worker sessions
+- capture, stop, and kill operations
+- persistent metadata and startup reconciliation
+
+## Repository Layout
+
+```text
+.
+├── config/
+│   └── defaults.yaml
+├── delamain_backend/
+│   ├── actions/
+│   ├── agent/
+│   ├── api/
+│   ├── db/
+│   ├── events/
+│   ├── security/
+│   ├── tools/
+│   └── workers/
+├── frontend/
+│   ├── app/
+│   ├── components/
+│   ├── hooks/
+│   ├── lib/
+│   └── public/
+├── scripts/
+├── tests/
+├── frontend_contract.md
+├── pyproject.toml
+└── README.md
+```
+
+## Using DELAMAIN
+
+### For Daniel as a User
+
+Typical flow:
+
+1. Open the browser UI.
+2. Select or create a conversation.
+3. Pick a folder if organization matters.
+4. Send a prompt.
+5. Watch the streamed response and any tool cards.
+6. Use the right-hand panels for health, usage, Syncthing, workers, or settings.
+7. Use direct actions for deterministic checks that should not go through the model.
+8. Unlock Sensitive only when a conversation truly needs it.
+
+### For UI Refinement
+
+The fastest feedback loop is the local Mac wrapper:
+
+- URL:
+  - `http://127.0.0.1:3000`
+- behavior:
+  - real frontend
+  - real API data
+  - proxied to the `serrano` dev-local backend sidecar
+
+That setup is for iteration speed. It is not the final production auth path.
+
+## Local Development
+
+### Prerequisites
+
+- Python 3.12+
+- Node.js 20+
+- `pnpm` via `corepack`
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/thedanielju/delamain-assistant.git
+cd delamain-assistant
+```
+
+### 2. Set up the backend
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e .[test]
+```
+
+### 3. Run the backend locally
+
+Use `dev_local` auth for local work:
+
+```bash
+export DELAMAIN_AUTH_MODE=dev_local
+uvicorn delamain_backend.main:app --reload --host 127.0.0.1 --port 8420
+```
+
+Optional overrides:
+
+```bash
+export DELAMAIN_DB_PATH=/tmp/delamain.sqlite
+export DELAMAIN_ENABLE_MODEL_CALLS=0
+```
+
+### 4. Set up the frontend
+
+```bash
+cd frontend
+corepack enable
+pnpm install
+```
+
+### 5. Run the frontend against the local backend
+
+The frontend is designed to use same-origin `/api`, so local development should use the built-in rewrite:
+
+```bash
+export NEXT_PUBLIC_DELAMAIN_MOCK=0
+export NEXT_PUBLIC_DELAMAIN_API_BASE=/api
+export DELAMAIN_DEV_API_PROXY=http://127.0.0.1:8420
+pnpm dev
+```
+
+Then open:
+
+```text
+http://127.0.0.1:3000
+```
+
+### 6. Run the frontend against `serrano`
+
+If you want the UI to talk to the `serrano` dev-local sidecar instead of a local backend:
+
+```bash
+export NEXT_PUBLIC_DELAMAIN_MOCK=0
+export NEXT_PUBLIC_DELAMAIN_API_BASE=/api
+export DELAMAIN_DEV_API_PROXY=http://127.0.0.1:18421
+pnpm dev
+```
+
+This assumes you already have a local tunnel forwarding `127.0.0.1:18421` to `serrano:8421`.
+
+## Deployment on Serrano
+
+### Backend service
+
+The backend is managed as a user service:
 
 ```bash
 systemctl --user status delamain-backend.service --no-pager
@@ -40,406 +345,128 @@ Service unit:
 /home/danielju/.config/systemd/user/delamain-backend.service
 ```
 
-Non-secret environment file:
+### Frontend service
+
+The frontend is also managed as a user service:
+
+```bash
+systemctl --user status delamain-frontend.service --no-pager
+systemctl --user restart delamain-frontend.service
+journalctl --user -u delamain-frontend.service -n 100 --no-pager
+```
+
+Service unit:
 
 ```text
-/home/danielju/.config/delamain/backend.env
+/home/danielju/.config/systemd/user/delamain-frontend.service
 ```
 
-Place provider API keys in the same service env file on serrano:
+At the moment that service is configured with:
 
-```dotenv
-OPENROUTER_API_KEY=...
-ANTHROPIC_ADMIN_API_KEY=...
-OPENAI_ADMIN_API_KEY=...
-GOOGLE_API_KEY=...
-```
+- `NEXT_PUBLIC_DELAMAIN_API_BASE=/api`
+- `DELAMAIN_DEV_API_PROXY=http://127.0.0.1:8421`
+- port `3000`
 
-`OPENROUTER_API_KEY` enables OpenRouter credits, `ANTHROPIC_ADMIN_API_KEY` enables Anthropic organization cost reporting, `OPENAI_ADMIN_API_KEY` enables OpenAI organization costs, and `GOOGLE_API_KEY` is available to Gemini CLI/API tooling if Daniel chooses API-key auth. Restart `delamain-backend.service` after changes.
+That is why the public frontend is still using the transitional API path.
 
-The service currently keeps real model calls disabled:
+### Open WebUI status
 
-```text
-DELAMAIN_ENABLE_MODEL_CALLS=0
-```
+Open WebUI is no longer the live service on port `3000`.
 
-The deployed serrano service currently keeps Cloudflare Access auth enabled:
+Operational changes already made on `serrano`:
 
-```text
-DELAMAIN_AUTH_MODE=access_required
-```
+- `open-webui` container stopped
+- restart policy set to `no`
+- `watchtower` container stopped
+- restart policy set to `no`
 
-Required Cloudflare Access env vars:
+### Public surfaces
 
-```text
-DELAMAIN_AUTH_MODE=access_required
-DELAMAIN_AUTH_ALLOWED_EMAIL=<Daniel's allowed Google email>
-DELAMAIN_CF_ACCESS_TEAM_DOMAIN=https://<team-name>.cloudflareaccess.com
-DELAMAIN_CF_ACCESS_AUDIENCE=<Cloudflare Access application AUD tag>
-```
+- `chat.danielju.com`
+  - Next.js frontend on `serrano`
+  - currently using the transitional `/api -> 8421` path
 
-The backend validates the `Cf-Access-Jwt-Assertion` header against Cloudflare Access signing keys in `access_required` mode.
+- `term.danielju.com`
+  - Cloudflare Access protected admin and ttyd surface
+  - `/api` forwarded to production backend on `8420`
+  - `/` forwarded to ttyd
 
-Public browser/API ingress is:
+## Security Model
 
-```text
-https://term.danielju.com
-  -> Cloudflare Access
-  -> Cloudflare Tunnel
-  -> nginx on serrano at http://127.0.0.1:8088
-  -> /api/ to FastAPI at http://127.0.0.1:8420
-  -> / to ttyd until the Next.js frontend replaces that route
-```
+### Auth
 
-Frontend code should use same-origin `/api/...` requests from `term.danielju.com`, not `127.0.0.1:8420`.
+- production backend auth is based on Cloudflare Access JWT validation
+- local development uses `DELAMAIN_AUTH_MODE=dev_local`
+- clients should treat auth failures as origin-level stale auth, not as a separate app login
 
-For local development without Cloudflare Access, explicitly set:
+### Filesystem Access
 
-```text
-DELAMAIN_AUTH_MODE=dev_local
-```
+Allowed roots:
 
-## API Contract
+- vault
+- `llm-workspace`
+- Sensitive
 
-Base URL: `http://127.0.0.1:8420/api`
+Sensitive rules:
 
-Key endpoints:
+- locked by default
+- unlocked per conversation only
+- no model-side unlock capability
+- access attempts audited
 
-```text
-GET    /api/health
-GET    /api/actions
-POST   /api/actions/{action_id}
-GET    /api/action-runs/{action_run_id}
-GET    /api/action-runs/{action_run_id}/stdout
-GET    /api/action-runs/{action_run_id}/stderr
-GET    /api/usage
-GET    /api/usage/subscriptions
-GET    /api/syncthing/summary
-GET    /api/syncthing/conflicts
-POST   /api/syncthing/conflicts/resolve
-GET    /api/folders
-POST   /api/folders
-PATCH  /api/folders/{folder_id}
-DELETE /api/folders/{folder_id}
-GET    /api/conversations
-POST   /api/conversations
-GET    /api/conversations/{conversation_id}
-PATCH  /api/conversations/{conversation_id}
-DELETE /api/conversations/{conversation_id}
-POST   /api/conversations/{conversation_id}/sensitive/unlock
-POST   /api/conversations/{conversation_id}/sensitive/lock
-GET    /api/conversations/{conversation_id}/messages
-POST   /api/conversations/{conversation_id}/messages
-GET    /api/conversations/{conversation_id}/action-runs
-GET    /api/conversations/{conversation_id}/runs
-GET    /api/runs/{run_id}
-GET    /api/runs/{run_id}/permissions
-POST   /api/runs/{run_id}/cancel
-POST   /api/runs/{run_id}/retry
-POST   /api/permissions/{permission_id}/resolve
-GET    /api/conversations/{conversation_id}/stream
-GET    /api/runs/{run_id}/stream
-GET    /api/settings
-PATCH  /api/settings
-GET    /api/settings/models
-GET    /api/settings/budget
-GET    /api/settings/tools
-PATCH  /api/settings/tools/{tool_name}
-GET    /api/context/current
-GET    /api/context/files/system-context
-PATCH  /api/context/files/system-context
-GET    /api/context/files/short-term-continuity
-PATCH  /api/context/files/short-term-continuity
-GET    /api/workers/types
-GET    /api/workers
-POST   /api/workers
-GET    /api/workers/{worker_id}
-POST   /api/workers/{worker_id}/stop
-DELETE /api/workers/{worker_id}
-GET    /api/workers/{worker_id}/output
-```
+### Write Tools
 
-Submit-prompt flow:
+Write access is intentionally narrow:
 
-1. `POST /api/conversations` creates a conversation.
-2. `POST /api/conversations/{conversation_id}/messages` persists the user message and a queued run.
-3. The response returns immediately with `message_id`, `run_id`, and `status=queued`.
-4. Backend processing continues server-side.
-5. REST history and SSE replay expose the completed result after reconnect.
+- guarded `patch_text_file`
+- guarded `run_shell`
+- no broad arbitrary file creation or overwrite tools
 
-Run statuses:
+## Testing
 
-```text
-queued
-running
-waiting_approval
-completed
-failed
-interrupted
-cancelled
-```
+### Backend tests
 
-SSE event names currently emitted:
-
-```text
-run.queued
-run.started
-context.loaded
-message.delta
-message.completed
-tool.started
-tool.output
-tool.finished
-model.usage
-audit
-error
-run.completed
-conversation.title
-permission.requested
-permission.resolved
-```
-
-SSE replay supports `Last-Event-ID`.
-Tool events include `assistant_message_id` so frontend clients can attach tool cards to the correct assistant message even when a run starts with tool calls before assistant text.
-
-Model calls:
-
-- Real model calls are disabled by default.
-- Enable only for an explicit smoke by setting `DELAMAIN_ENABLE_MODEL_CALLS=1`.
-- Disable fallback for bounded route validation with `DELAMAIN_DISABLE_MODEL_FALLBACKS=1`.
-- Model calls time out after `DELAMAIN_MODEL_TIMEOUT_SECONDS` seconds, default `30`.
-- `github_copilot/gpt-5.4-mini` uses LiteLLM Responses API.
-- Other configured routes use LiteLLM chat completions.
-
-Filesystem/Sensitive policy:
-
-- Allowed roots are `/home/danielju/Vault`, `/home/danielju/llm-workspace`, and `/home/danielju/Obsidian Sensitive`.
-- Sensitive is locked by default per conversation.
-- Conversation creation always starts with `sensitive_unlocked=false`; unlock is only through `POST /api/conversations/{conversation_id}/sensitive/unlock`.
-- `POST /api/conversations/{conversation_id}/sensitive/lock` re-locks the conversation.
-- Sensitive unlock, lock, allowed access, and denied access attempts emit `audit` events.
-- The model cannot unlock Sensitive by tool call.
-- `.env`, key/token/credential-like files, Syncthing config, private keys, and obvious binary/rich files are blocked.
-- Implemented filesystem/shell tools: `read_text_file`, `list_directory`, `search_vault`, guarded `patch_text_file`, and guarded `run_shell`.
-- `read_text_file` reads only the configured output window plus one byte and reports full file size from `stat()`.
-- `search_vault` uses `delamain-vault-index query <term> --json` when available, filters returned paths through backend path policy, and falls back to direct scanning only if the helper/index path is unavailable.
-- `patch_text_file` requires one exact preimage match in an allowed text file and writes a runtime backup outside Syncthing before replacing content. It is enabled by default; Sensitive files require the conversation's Sensitive unlock.
-- `run_shell` accepts structured `argv` plus allowed `cwd`, rejects shell `-c` command strings, uses a minimal environment, caps output, enforces timeout, and denies Sensitive cwd/argv targets. It is disabled by default through tool settings.
-- Implemented health tool: `get_health_status`.
-- Broad `write_file`, `create_file`, and arbitrary overwrite remain intentionally unimplemented.
-
-Quick actions:
-
-- Actions are fixed operation specs, not arbitrary shell strings.
-- Action execution uses structured `argv`, fixed/validated `cwd`, minimal environment, timeout handling, and exit-code capture.
-- Full stdout/stderr are stored under `/home/danielju/.local/share/delamain/action-outputs/`.
-- API responses include stdout/stderr previews and artifact paths.
-- If `conversation_id` is supplied to `POST /api/actions/{action_id}`, action start/completion/timeout/denial audit events are emitted into that conversation.
-- Sensitive paths are denied in action cwd/argv for M5.1, including relative path-like argv and `--flag=path` forms resolved against cwd.
-- Spawn/runtime failures terminalize as structured `failed` results with `TOOL_EXECUTION_ERROR`; action runs should not remain stuck in `started`.
-- Action output artifacts are explicitly required to live outside configured Vault, `llm-workspace`, and Sensitive roots.
-- Action-run retrieval serves only stdout/stderr paths owned by persisted `action_runs` rows and refuses arbitrary file reads.
-- Owned artifact reads validate the resolved target remains under the action-output root without rejecting legitimate symlinked path components.
-- Initial action IDs:
-  - `health.backend`
-  - `health.helpers`
-  - `ref.status`
-  - `ref.reconcile_dry_run`
-  - `vault_index.status`
-  - `vault_index.build`
-  - `sync_guard.status`
-  - `subscription.codex_status`
-  - `subscription.claude_status`
-  - `subscription.gemini_status`
-  - `winpc.subscription_codex_status`
-  - `winpc.subscription_claude_status`
-  - `winpc.hostname`
-  - `winpc.date`
-
-Syncthing conflict resolution:
-
-- `GET /api/syncthing/summary` and `GET /api/syncthing/conflicts` read Sync Guard reports.
-- `POST /api/syncthing/conflicts/resolve` supports `keep_canonical`, `keep_conflict`, `keep_both`, and `stage_review`.
-- Resolution backups are stored outside Syncthing under `/home/danielju/.local/share/delamain/syncthing-conflict-resolution-backups/` on serrano.
-- `7lf7x-urjpx` is the Syncthing folder ID for the Sensitive vault.
-
-Settings:
-
-- Settings are persisted in SQLite.
-- `GET /api/settings` returns supported runtime settings.
-- `PATCH /api/settings` currently accepts `context_mode`, `title_generation_enabled`, `model_default`, and `copilot_budget_hard_override_enabled`.
-- `GET /api/settings/models` exposes configured model routes and route families.
-- `GET /api/settings/budget` exposes approximate current-month Copilot request tracking from completed `github_copilot/*` model calls, plus soft/hard threshold status and whether the hard-threshold override is enabled.
-- Copilot budget hard threshold enforcement skips Copilot routes and falls back to the configured paid route unless `copilot_budget_hard_override_enabled` is true. Soft threshold emits audit only.
-- `GET /api/usage` exposes Copilot budget, completed call counts for Claude/Codex/OpenRouter, OpenRouter credits when `OPENROUTER_API_KEY` is configured, Anthropic organization cost reporting when `ANTHROPIC_ADMIN_API_KEY` is configured, OpenAI organization cost reporting when `OPENAI_ADMIN_API_KEY` or `OPENAI_API_KEY` is configured, and cached Claude/Codex CLI subscription-auth probes.
-- `GET /api/usage/subscriptions` returns only the cached CLI subscription-auth probes and accepts `?refresh=true`.
-- `GET /api/settings/tools` exposes tool names, descriptions, enabled state, risk metadata, and approval policy.
-- `PATCH /api/settings/tools/{tool_name}` enables/disables a backend tool and can set `approval_policy` to `auto` or `confirm`.
-- Disabled tools are omitted from model tool schemas and are denied if called in a tool loop.
-- Tools default to `approval_policy=auto` for autonomous operation. `confirm` pauses the run at `waiting_approval`, emits `permission.requested`, and resumes after the permission is approved.
-- Settings/tool changes emit `audit` events when a `conversation_id` is supplied.
-
-Context files:
-
-- `GET /api/context/current` returns the active context item list for `normal` or `blank_slate` mode.
-- Editable context files are:
-  - `system-context`
-  - `short-term-continuity`
-- Context writes create timestamped backups under `/home/danielju/.local/share/delamain/context-backups/` before replacing existing files.
-- Backup paths are required to stay outside Vault, `llm-workspace`, and Sensitive roots.
-- Context writes emit `audit` events when a `conversation_id` is supplied.
-
-Workers:
-
-- Workers are named tmux sessions managed by the backend.
-- `GET /api/workers/types` lists available worker types: `opencode`, `claude_code`, `codex_cli`, `gemini_cli`, `shell`, and `winpc_shell`.
-- `claude_code` starts `claude --dangerously-skip-permissions`.
-- `codex_cli` starts `codex --yolo`.
-- `gemini_cli` starts `gemini --yolo`.
-- `POST /api/workers` starts a new worker session; returns immediately with worker metadata.
-- `GET /api/workers` lists all workers; filterable by `?status=` or `?conversation_id=`.
-- `GET /api/workers/{worker_id}` returns worker metadata; `?refresh=true` checks tmux liveness.
-- `POST /api/workers/{worker_id}/stop` sends Ctrl-C then `exit` to gracefully stop.
-- `DELETE /api/workers/{worker_id}` kills the tmux session immediately.
-- `GET /api/workers/{worker_id}/output?lines=N` captures the last N lines from the tmux pane.
-- Serrano worker tmux socket: `/home/danielju/.local/share/delamain/workers.sock` (separate from the ttyd socket).
-- `winpc_shell` starts/captures/stops/kills a WSL tmux session over `ssh winpc` with WSL cwd `/home/daniel`.
-- Worker records persist in SQLite with status, type, host, tmux session/socket, conversation association, and timestamps.
-- Worker start/stop/kill emit `audit` events when a `conversation_id` is supplied.
-- Duplicate worker names are rejected while a worker with that name is running.
-- Serrano workers use local tmux; `winpc_shell` uses the SSH/WSL tmux adapter.
-- Worker manager and worker type registry are cached for the app lifespan.
-- Backend startup reconciles persisted `running`/`starting`/`stopping` workers against live tmux sessions and marks dead sessions `stopped`.
-
-Worker statuses:
-
-```text
-starting
-running
-stopping
-stopped
-failed
-```
-
-Maintenance:
-
-- Startup cleanup removes action-output artifact directories older than `DELAMAIN_ACTION_OUTPUT_RETENTION_DAYS`, default `30`.
-- Startup cleanup removes context backup files older than `DELAMAIN_CONTEXT_BACKUP_RETENTION_DAYS`, default `30`.
-- SQLite metadata remains durable; old artifact URLs may return `404` after retention cleanup.
-
-Auth deployment:
-
-- Public access should stay behind Cloudflare Access and nginx/Cloudflare Tunnel.
-- Cloudflare Access should use Google as the identity provider, Daniel's Google account as the only allowed identity, and a 30-day application/session duration.
-- Passkey behavior is handled by Google account sign-in: Apple devices can use iCloud Keychain passkeys / Face ID / Touch ID where available, while non-Apple devices can use normal Google login.
-- nginx must forward `CF-Access-JWT-Assertion` to FastAPI as `CF-Access-JWT-Assertion` or `Cf-Access-Jwt-Assertion`.
-- Keep `DELAMAIN_AUTH_MODE=dev_local` until the Access application AUD tag and team domain are configured.
-
-## Curl Examples
+From the repo root:
 
 ```bash
-curl -s http://127.0.0.1:8420/api/health | jq
+pytest -q
 ```
+
+### Frontend checks
+
+From `frontend/`:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8420/api/conversations \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Smoke"}' | jq
+pnpm tsc --noEmit
+pnpm build
 ```
+
+### Live smoke
+
+There is also a guarded live smoke script:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8420/api/conversations/<conversation_id>/messages \
-  -H 'Content-Type: application/json' \
-  -d '{"content":"what time is it now?"}' | jq
+python scripts/live_model_smoke.py
 ```
 
-```bash
-curl -N http://127.0.0.1:8420/api/conversations/<conversation_id>/stream
-```
+It refuses to run unless live model calls are explicitly enabled.
 
-```bash
-curl -s -X POST http://127.0.0.1:8420/api/conversations/<conversation_id>/sensitive/unlock | jq
-curl -s -X POST http://127.0.0.1:8420/api/conversations/<conversation_id>/sensitive/lock | jq
-```
+## Important Documents
 
-```bash
-curl -s http://127.0.0.1:8420/api/actions | jq
-```
+- repo-local frontend/backend API contract:
+  - [frontend_contract.md](./frontend_contract.md)
+- authoritative project notes in the Obsidian vault:
+  - `Projects/DELAMAIN/DELAMAIN.md`
+  - `Projects/DELAMAIN/state/current-state.md`
+  - `Projects/DELAMAIN/state/frontend-contract.md`
+  - `Projects/DELAMAIN/state/open_backend_issues.md`
+  - `Projects/DELAMAIN/logs/changelog.md`
 
-```bash
-curl -s -X POST http://127.0.0.1:8420/api/actions/ref.status \
-  -H 'Content-Type: application/json' \
-  -d '{"conversation_id":"<conversation_id>"}' | jq
-```
+## Summary
 
-```bash
-curl -s http://127.0.0.1:8420/api/conversations/<conversation_id>/action-runs | jq
-curl -s http://127.0.0.1:8420/api/action-runs/<action_run_id> | jq
-curl -s http://127.0.0.1:8420/api/action-runs/<action_run_id>/stdout
-```
+DELAMAIN is a real personal assistant system, not just a prompt wrapper. This repo now holds both halves of the Phase 2 application:
 
-```bash
-curl -s http://127.0.0.1:8420/api/settings | jq
-curl -s http://127.0.0.1:8420/api/settings/tools | jq
-curl -s -X PATCH http://127.0.0.1:8420/api/settings/tools/get_now \
-  -H 'Content-Type: application/json' \
-  -d '{"enabled":false,"conversation_id":"<conversation_id>"}' | jq
-```
+- the backend that owns conversations, policy, state, and machine coordination
+- the frontend that exposes those capabilities as a browser interface
 
-```bash
-curl -s http://127.0.0.1:8420/api/context/current | jq
-curl -s http://127.0.0.1:8420/api/context/files/system-context | jq
-curl -s -X PATCH http://127.0.0.1:8420/api/context/files/short-term-continuity \
-  -H 'Content-Type: application/json' \
-  -d '{"content":"Current continuity note.","conversation_id":"<conversation_id>"}' | jq
-```
-
-```bash
-curl -s http://127.0.0.1:8420/api/workers/types | jq
-curl -s http://127.0.0.1:8420/api/workers | jq
-curl -s -X POST http://127.0.0.1:8420/api/workers \
-  -H 'Content-Type: application/json' \
-  -d '{"worker_type":"shell","name":"my-shell"}' | jq
-curl -s http://127.0.0.1:8420/api/workers/<worker_id>?refresh=true | jq
-curl -s http://127.0.0.1:8420/api/workers/<worker_id>/output?lines=50 | jq
-curl -s -X POST http://127.0.0.1:8420/api/workers/<worker_id>/stop | jq
-curl -s -X DELETE http://127.0.0.1:8420/api/workers/<worker_id> | jq
-```
-
-## Controlled Live Model Smoke
-
-This may consume Copilot requests. Run only after explicit approval.
-
-Text-only route smoke:
-
-```bash
-cd /home/danielju/delamain/backend
-DELAMAIN_ENABLE_MODEL_CALLS=1 \
-DELAMAIN_DISABLE_MODEL_FALLBACKS=1 \
-/home/danielju/.local/share/delamain/backend-venv/bin/python scripts/live_model_smoke.py
-```
-
-One simple tool-call probe on the Responses route:
-
-```bash
-cd /home/danielju/delamain/backend
-DELAMAIN_ENABLE_MODEL_CALLS=1 \
-DELAMAIN_DISABLE_MODEL_FALLBACKS=1 \
-/home/danielju/.local/share/delamain/backend-venv/bin/python scripts/live_model_smoke.py --tool-probe
-```
-
-The script prints the requested route, expected route family, run status, and persisted `model_calls` rows. It uses a temporary SQLite DB under `/tmp`.
-
-If GitHub Copilot auth is not present under LiteLLM's normal local config path, the script refuses to start by default. Pass `--allow-device-flow` only when intentionally authenticating Copilot on `serrano`.
-
-## Local Run
-
-```bash
-/home/danielju/.local/share/delamain/backend-venv/bin/uvicorn delamain_backend.main:app --host 127.0.0.1 --port 8420
-```
-
-## Tests
-
-```bash
-/home/danielju/.local/share/delamain/backend-venv/bin/python -m pytest
-```
+If you are editing UI, work from the Mac wrapper first. If you are validating deployment behavior, check the `serrano` services and public hosts. If you are trying to understand the project in full, read the vault notes alongside this README.

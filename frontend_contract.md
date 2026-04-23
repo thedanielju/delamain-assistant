@@ -1,209 +1,309 @@
+---
+tags: [project/delamain, backend, frontend, api-contract, phase-2]
+aliases:
+  - Frontend Contract
+  - API Contract
+---
+
 # DELAMAIN Frontend Contract
 
-Last updated: 2026-04-22
+Last updated: 2026-04-23
 
-This is the repo-local API contract for the DELAMAIN frontend. The deployed frontend should call same-origin `/api/...` behind Cloudflare Access. Local backend base URL is `http://127.0.0.1:8420/api`.
+This document defines the complete backend API contract for a Phase 2 frontend implementation. The canonical backend runs on `serrano` at `http://127.0.0.1:8420/api`. Deployed frontends should call same-origin `/api/...` and should not depend on whether the current upstream hop is nginx, a Next.js rewrite, or direct localhost development. All responses are JSON unless otherwise noted.
 
-## Auth
+## Authentication
 
-Production API traffic is protected by Cloudflare Access. When a request reaches FastAPI without a valid Access JWT in `access_required` mode, the backend returns:
+Backend source now supports Cloudflare Access JWT validation but defaults to `DELAMAIN_AUTH_MODE=dev_local` for localhost/Tailscale development.
+
+Production target:
+
+- Cloudflare Access protects the production backend ingress and admin terminal surfaces.
+- Google is the identity provider.
+- Daniel's Google account is the only allowed identity.
+- Session duration target is 30 days.
+- Apple devices should use Google passkeys through iCloud Keychain / Face ID / Touch ID where available; non-Apple devices use normal Google login.
+- nginx forwards `CF-Access-JWT-Assertion` to the FastAPI backend.
+- FastAPI validates the JWT signature, issuer, Access application AUD tag, and allowed email when `DELAMAIN_AUTH_MODE=access_required`.
+
+The frontend should not implement a separate password system. It should treat auth as an origin concern and assume same-origin authenticated requests once the production ingress is finalized.
+
+When a request reaches FastAPI in `access_required` mode without a valid Cloudflare Access JWT, the backend returns:
 
 ```json
 {
   "detail": {
-    "code": "auth_required",
-    "message": "Missing Cloudflare Access JWT",
-    "redirect_url": "https://<team>.cloudflareaccess.com/cdn-cgi/access/login?redirect_url=..."
+    "code": "AUTH_REQUIRED",
+    "message": "Missing Cloudflare Access JWT"
   }
 }
 ```
 
-Cloudflare can still intercept before proxying to FastAPI. Treat either the JSON above or a Cloudflare login response as stale auth.
+Clients should treat auth codes case-insensitively and should not require `redirect_url` to exist. A backend-generated stale-auth response may include a `redirect_url`, but the current deployed backend response only guarantees `code` and `message`.
+
+If Cloudflare itself intercepts before proxying to FastAPI, Cloudflare may still return its own login response. The machine-readable response above is guaranteed only for requests that reach the backend.
+
+## Base URL
+
+```text
+http://127.0.0.1:8420/api
+```
+
+## Health
+
+### GET /api/health
+
+Returns backend status, SQLite health, LiteLLM version, config summary, and helper availability.
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "sqlite": { "path": "...", "ok": true },
+  "litellm": { "version": "1.83.8", "known_bad_blocked": true, "error": null },
+  "config": {
+    "host": "127.0.0.1",
+    "port": 8420,
+    "model_default": "github_copilot/gpt-5.4-mini",
+    "model_calls_enabled": false
+  },
+  "budget": { "...": "same shape as GET /api/settings/budget copilot_budget" },
+  "helpers": {
+    "now": { "path": "...", "exists": true, "executable": true },
+    "delamain_ref": { "path": "...", "exists": true, "executable": true },
+    "delamain_vault_index": { "path": "...", "exists": true, "executable": true }
+  }
+}
+```
 
 ## Conversations
 
-`GET /api/conversations`
+### GET /api/conversations
 
-Returns `ConversationOut[]`, ordered by `updated_at DESC`.
+Returns all conversations ordered by `updated_at DESC`.
 
-`POST /api/conversations`
+Response: `[ConversationOut, ...]`
 
-Body:
+### POST /api/conversations
 
-```ts
+Create a new conversation.
+
+Request body:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `title` | string or null | null | Optional title |
+| `context_mode` | `"normal"` or `"blank_slate"` | `"normal"` | Context loading mode |
+| `model_route` | string or null | null | Override model route |
+| `incognito_route` | boolean | false | If true, use incognito/privacy route |
+| `folder_id` | string or null | null | Optional sidebar folder assignment |
+
+Response: `ConversationOut`
+
+### GET /api/conversations/{conversation_id}
+
+Response: `ConversationOut`
+
+### PATCH /api/conversations/{conversation_id}
+
+Request body:
+
+| Field | Type | Description |
+|---|---|---|
+| `title` | string or null | Update title |
+| `archived` | boolean or null | Archive/unarchive |
+| `folder_id` | string or null | Move to folder, or clear with null |
+
+Response: `ConversationOut`
+
+### DELETE /api/conversations/{conversation_id}
+
+Deletes the conversation and all associated messages, runs, events, and tool calls (cascade).
+
+Response: `204 No Content`
+
+### ConversationOut Shape
+
+```json
 {
-  title?: string | null
-  context_mode?: "normal" | "blank_slate"
-  model_route?: string | null
-  incognito_route?: boolean
-  folder_id?: string | null
-}
-```
-
-`GET /api/conversations/{conversation_id}`
-
-Returns `ConversationOut`.
-
-`PATCH /api/conversations/{conversation_id}`
-
-Body:
-
-```ts
-{
-  title?: string | null
-  archived?: boolean | null
-  folder_id?: string | null
-}
-```
-
-`DELETE /api/conversations/{conversation_id}`
-
-Returns `204`. Deletes messages, runs, events, and tool calls for the conversation.
-
-`ConversationOut`:
-
-```ts
-{
-  id: string
-  title: string | null
-  context_mode: "normal" | "blank_slate"
-  model_route: string | null
-  incognito_route: boolean
-  sensitive_unlocked: boolean
-  folder_id: string | null
-  archived: boolean
-  created_at: string
-  updated_at: string
+  "id": "conv_...",
+  "title": "My conversation",
+  "context_mode": "normal",
+  "model_route": null,
+  "incognito_route": false,
+  "sensitive_unlocked": false,
+  "folder_id": null,
+  "archived": false,
+  "created_at": "2026-04-22T07:00:00.000Z",
+  "updated_at": "2026-04-22T07:00:00.000Z"
 }
 ```
 
 ## Folders
 
-`GET /api/folders`
+### GET /api/folders
 
-Returns `FolderOut[]`, ordered by name.
+Returns all conversation folders ordered by name.
 
-`POST /api/folders`
+Response: `[FolderOut, ...]`
 
-Body: `{ name: string, parent_id?: string | null }`
+### POST /api/folders
 
-`PATCH /api/folders/{folder_id}`
+Request body:
 
-Body: `{ name?: string | null, parent_id?: string | null }`
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Folder name |
+| `parent_id` | string or null | Optional parent folder |
 
-`DELETE /api/folders/{folder_id}`
+Response: `FolderOut`
 
-Returns `204`. Conversations in that folder are kept and set to `folder_id: null`; child folders are re-parented to `null`.
+### PATCH /api/folders/{folder_id}
 
-`FolderOut`:
+Request body:
 
-```ts
+| Field | Type | Description |
+|---|---|---|
+| `name` | string or null | Rename folder |
+| `parent_id` | string or null | Move folder or clear parent |
+
+Response: `FolderOut`
+
+### DELETE /api/folders/{folder_id}
+
+Deletes the folder. Conversations in the folder are kept and receive `folder_id: null`; child folders also have `parent_id: null`.
+
+Response: `204 No Content`
+
+### FolderOut Shape
+
+```json
 {
-  id: string
-  name: string
-  parent_id: string | null
-  created_at: string
-  updated_at: string
+  "id": "folder_...",
+  "name": "School",
+  "parent_id": null,
+  "created_at": "...",
+  "updated_at": "..."
 }
 ```
 
-## Messages And Runs
+## Messages and Prompt Submission
 
-`GET /api/conversations/{conversation_id}/messages`
+### GET /api/conversations/{conversation_id}/messages
 
-Returns `MessageOut[]`, ordered by `created_at ASC`.
+Returns all messages for a conversation ordered by `created_at ASC`.
 
-`POST /api/conversations/{conversation_id}/messages`
+Response: `[MessageOut, ...]`
 
-Body:
+### POST /api/conversations/{conversation_id}/messages
 
-```ts
+Submit a user prompt. This is the primary interaction endpoint.
+
+Request body:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `content` | string (min 1 char) | required | The user message |
+| `context_mode` | string or null | null | Override context mode for this run |
+| `model_route` | string or null | null | Override model route for this run |
+| `incognito_route` | boolean or null | null | Override incognito for this run |
+
+Response (returns immediately, run executes in background):
+
+```json
 {
-  content: string
-  context_mode?: string | null
-  model_route?: string | null
-  incognito_route?: boolean | null
+  "message_id": "msg_...",
+  "run_id": "run_...",
+  "status": "queued"
 }
 ```
 
-Returns immediately:
+Frontend flow:
+1. POST the prompt, receive `run_id`.
+2. Connect to SSE stream to follow the run.
+3. Run progresses through `queued` -> `running` -> `completed`/`failed`.
+4. Messages and events accumulate during the run.
 
-```ts
+Ordering guarantee: the backend persists the user message and run before returning this response, emits `run.queued` after the transaction, and then enqueues background processing. A very fast run may emit `run.started`/deltas before the browser finishes opening SSE; clients should rely on SSE replay with `Last-Event-ID` or fetch REST history after reconnect.
+
+### MessageOut Shape
+
+```json
 {
-  message_id: string
-  run_id: string
-  status: "queued"
+  "id": "msg_...",
+  "conversation_id": "conv_...",
+  "run_id": "run_...",
+  "role": "user",
+  "content": "what time is it?",
+  "status": "completed",
+  "created_at": "...",
+  "updated_at": "..."
 }
 ```
 
-Ordering guarantee: the user message and run are persisted before this response. `run.queued` is emitted after that transaction. Very fast runs may emit later events before the browser opens SSE, so clients should use `Last-Event-ID` replay or refetch REST history after reconnect.
+Roles: `user`, `assistant`, `tool`, `system`.
 
-`MessageOut`:
+## Runs
 
-```ts
+### GET /api/conversations/{conversation_id}/runs
+
+Returns all runs for a conversation.
+
+### GET /api/runs/{run_id}
+
+Returns a single run.
+
+### POST /api/runs/{run_id}/cancel
+
+Cancel a running run.
+
+### POST /api/runs/{run_id}/retry
+
+Retry a failed/cancelled run.
+
+### Run Statuses
+
+| Status | Description |
+|---|---|
+| `queued` | Submitted, waiting to start |
+| `running` | Actively processing |
+| `waiting_approval` | Paused for user approval (future) |
+| `completed` | Finished successfully |
+| `failed` | Finished with error |
+| `interrupted` | Interrupted on startup recovery |
+| `cancelled` | Cancelled by user |
+
+### RunOut Shape
+
+```json
 {
-  id: string
-  conversation_id: string
-  run_id: string | null
-  role: "user" | "assistant" | "tool" | "system"
-  content: string
-  status: string
-  created_at: string
-  updated_at: string
+  "id": "run_...",
+  "conversation_id": "conv_...",
+  "user_message_id": "msg_...",
+  "assistant_message_id": "msg_...",
+  "status": "completed",
+  "context_mode": "normal",
+  "model_route": "github_copilot/gpt-5.4-mini",
+  "incognito_route": false,
+  "error_code": null,
+  "error_message": null,
+  "created_at": "...",
+  "started_at": "...",
+  "completed_at": "..."
 }
 ```
 
-`GET /api/conversations/{conversation_id}/runs`
+## SSE Streaming
 
-Returns `RunOut[]`.
+### GET /api/conversations/{conversation_id}/stream
 
-`GET /api/runs/{run_id}`
+Stream all events for a conversation. Supports `Last-Event-ID` header and `last_event_id` query param for replay. Events with `id > Last-Event-ID` are replayed before live subscription.
 
-Returns `RunOut`.
+### GET /api/runs/{run_id}/stream
 
-`POST /api/runs/{run_id}/cancel`
+Stream events for a specific run. Supports `Last-Event-ID` header and `last_event_id` query param for replay.
 
-Cancels a running run.
-
-`POST /api/runs/{run_id}/retry`
-
-Retries a failed or cancelled run.
-
-Run statuses: `queued`, `running`, `waiting_approval`, `completed`, `failed`, `interrupted`, `cancelled`.
-
-`RunOut`:
-
-```ts
-{
-  id: string
-  conversation_id: string
-  user_message_id: string | null
-  assistant_message_id: string | null
-  status: string
-  context_mode: string
-  model_route: string | null
-  incognito_route: boolean
-  error_code: string | null
-  error_message: string | null
-  created_at: string
-  started_at: string | null
-  completed_at: string | null
-}
-```
-
-## SSE
-
-`GET /api/conversations/{conversation_id}/stream`
-
-Streams all conversation events.
-
-`GET /api/runs/{run_id}/stream`
-
-Streams one run's events.
-
-Both endpoints support `Last-Event-ID` and `last_event_id` query param. Events with `id > last_event_id` are replayed before the live subscription.
-
-SSE wire format:
+### Event Format
 
 ```text
 id: 42
@@ -211,200 +311,350 @@ event: message.delta
 data: {"payload": ...}
 ```
 
-Known event payloads:
+### Event Types
 
-```ts
-run.queued: { run_id: string, status?: string, position?: number }
-run.started: { run_id: string, model_route?: string }
-context.loaded: { items: unknown[] }
-message.delta: { message_id: string, text: string }
-message.completed: { message_id: string, finish_reason?: string }
-tool.started: { assistant_message_id?: string, run_id?: string, tool_call_id: string, tool: string, name: string, arguments: unknown, args: unknown }
-tool.output: { assistant_message_id?: string, run_id?: string, tool_call_id: string, stream?: "stdout" | "stderr", text: string, chunk: string }
-tool.finished: { assistant_message_id?: string, run_id?: string, tool_call_id: string, status: string, duration_ms?: number, result_summary?: string, stdout?: string, stderr?: string }
-model.usage: { run_id: string, model_route: string, model?: string, provider?: string, input_tokens?: number, output_tokens?: number, prompt_tokens?: number, completion_tokens?: number, premium_request_count?: number | null, estimated_cost?: number | null, estimated_cost_usd?: number | null }
-permission.requested: { run_id: string, permission_id: string, kind: string, summary: string, details: unknown }
-permission.resolved: { run_id?: string, permission_id: string, decision: string, resolver: string, note?: string | null }
-conversation.title: { conversation_id?: string, title: string }
-audit: { action: string, summary: string, [key: string]: unknown }
-error: { code: string, message: string, details?: unknown }
-run.completed: { run_id: string, status: string }
+| Event | When | Key Payload Fields |
+|---|---|---|
+| `run.queued` | Run created | `run_id`, `status` |
+| `run.started` | Run begins processing | `run_id` |
+| `context.loaded` | Context files loaded | `items` (array of loaded context) |
+| `message.delta` | Streaming assistant text | `message_id`, `text` |
+| `message.completed` | Full assistant message finished | `message_id`, `finish_reason` |
+| `tool.started` | Tool call begins | `assistant_message_id`, `tool_call_id`, `tool`, `name`, `arguments`, `args` |
+| `tool.output` | Tool call output chunk | `assistant_message_id`, `tool_call_id`, `stream`, `text`, `chunk` |
+| `tool.finished` | Tool call done | `assistant_message_id`, `tool_call_id`, `status`, `duration_ms`, `result_summary`, `stdout`, `stderr` |
+| `model.usage` | Token usage | `run_id`, `model_route`, `prompt_tokens`, `completion_tokens`, `premium_request_count`, `estimated_cost` |
+| `audit` | System audit event | `action`, `summary`, plus action-specific fields |
+| `error` | Error occurred | `code`, `message` |
+| `run.completed` | Run finished | `run_id`, `status` |
+| `permission.requested` | Permission requested | `run_id`, `permission_id`, `kind`, `summary`, `details` |
+| `permission.resolved` | Permission resolved | `permission_id`, `decision`, `resolver`, `note` |
+| `conversation.title` | Deterministic title generated | `conversation_id`, `title` |
+
+Compatibility aliases on tool events:
+
+- `tool.started` includes both `tool`/`arguments` and `name`/`args`.
+- `tool.output` includes both `text` and `chunk`.
+
+## Sensitive Vault Access
+
+### POST /api/conversations/{conversation_id}/sensitive/unlock
+
+Unlock Sensitive vault access for this conversation. This is a user-initiated action; the model cannot unlock Sensitive by tool call.
+
+Response: `{"sensitive_unlocked": true}`
+
+### POST /api/conversations/{conversation_id}/sensitive/lock
+
+Re-lock Sensitive vault access.
+
+Response: `{"sensitive_unlocked": false}`
+
+Both endpoints emit `audit` events. Conversations always start locked.
+
+## Quick Actions
+
+### GET /api/actions
+
+Returns the list of registered deterministic actions.
+
+Response:
+
+```json
+{
+  "actions": [
+    {
+      "id": "health.backend",
+      "label": "Backend health",
+      "description": "Check whether the DELAMAIN backend user service is active.",
+      "argv": ["/usr/bin/systemctl", "--user", "is-active", "delamain-backend.service"],
+      "cwd": "/home/danielju/delamain/backend",
+      "timeout_seconds": 5,
+      "writes": false,
+      "remote": false
+    }
+  ]
+}
 ```
 
-Frontend clients should render unknown event types as debug cards instead of crashing.
+Available action IDs: `health.backend`, `health.helpers`, `ref.status`, `ref.reconcile_dry_run`, `vault_index.status`, `vault_index.build`, `sync_guard.status`, `subscription.codex_status`, `subscription.claude_status`, `subscription.gemini_status`, `winpc.subscription_codex_status`, `winpc.subscription_claude_status`, `winpc.subscription_gemini_status`, `winpc.hostname`, `winpc.date`.
 
-## Sensitive
+### POST /api/actions/{action_id}
 
-`POST /api/conversations/{conversation_id}/sensitive/unlock`
+Execute an action. Returns `202 Accepted`.
 
-Unlocks Sensitive for that conversation. Returns `{ sensitive_unlocked: true }`.
+Request body (optional):
 
-`POST /api/conversations/{conversation_id}/sensitive/lock`
+| Field | Type | Description |
+|---|---|---|
+| `conversation_id` | string or null | Associate with a conversation for audit events |
 
-Locks Sensitive for that conversation. Returns `{ sensitive_unlocked: false }`.
+Response:
 
-Conversations start locked. The model cannot unlock Sensitive by tool call. Sensitive lock/unlock/access attempts emit `audit` events.
+```json
+{
+  "id": "actionrun_...",
+  "action_id": "ref.status",
+  "label": "Reference status",
+  "status": "success",
+  "error_code": null,
+  "error_message": null,
+  "exit_code": 0,
+  "duration_ms": 168,
+  "argv": ["..."],
+  "cwd": "...",
+  "writes": false,
+  "remote": false,
+  "stdout_path": "...",
+  "stderr_path": "...",
+  "stdout_bytes": 793,
+  "stderr_bytes": 0,
+  "stdout_preview": "...",
+  "stderr_preview": "",
+  "stdout_preview_truncated": false,
+  "stderr_preview_truncated": false
+}
+```
+
+Action statuses: `success`, `failed`, `timeout`, `denied`.
+
+## Action Run Retrieval
+
+### GET /api/action-runs/{action_run_id}
+
+Returns the persisted action run record from SQLite (includes `conversation_id`, `argv_json`, timestamps).
+
+### GET /api/action-runs/{action_run_id}/stdout
+
+Returns the full stdout as `text/plain`.
+
+### GET /api/action-runs/{action_run_id}/stderr
+
+Returns the full stderr as `text/plain`.
+
+### GET /api/conversations/{conversation_id}/action-runs
+
+Returns all action runs associated with a conversation, ordered by `created_at DESC`.
 
 ## Usage
 
-`GET /api/usage`
+### GET /api/usage
 
-Returns a provider-oriented usage object:
+Returns a single provider-oriented usage object for the Usage panel. Copilot is backed by persisted `model_calls` and configured thresholds. Claude, Codex, and OpenRouter also expose completed call counts from `model_calls`.
 
-```ts
+Billing/credit integrations:
+
+- `OPENROUTER_API_KEY` enables OpenRouter credits via `GET https://openrouter.ai/api/v1/credits`.
+- `ANTHROPIC_ADMIN_API_KEY` enables Anthropic organization cost reporting via `/v1/organizations/cost_report`. Anthropic requires an admin key; individual Claude accounts do not expose this API.
+- `OPENAI_ADMIN_API_KEY` or `OPENAI_API_KEY` enables best-effort OpenAI organization cost reporting via `/v1/organization/costs`.
+- Missing keys return stable `not_configured` shapes instead of frontend-specific branches.
+
+Subscription/auth readiness is separate from billing. `/api/usage` includes a cached `subscriptions` object, and Claude/Codex provider rows include the same data under `details.subscription`. This runs fixed status probes (`codex login status`, `claude auth status`) on the backend host and WinPC WSL. The CLI status probes can report login/subscription readiness even when provider billing APIs are unavailable.
+
+Response:
+
+```json
 {
-  period: "current_month_utc"
-  generated_at: string
-  providers: UsageProvider[]
-  subscriptions: SubscriptionSummary
-}
-```
-
-`UsageProvider`:
-
-```ts
-{
-  provider: "copilot" | "claude" | "codex" | "openrouter"
-  label: string
-  period: string
-  unit: "premium_requests" | "calls" | "usd"
-  used: number
-  limit_or_credits: number | null
-  percent_used: number | null
-  status: string
-  wired: boolean
-  details: Record<string, unknown>
-}
-```
-
-Provider notes:
-
-- Copilot is backed by completed `github_copilot/*` rows in `model_calls` plus configured thresholds.
-- OpenRouter credits are fetched when `OPENROUTER_API_KEY` exists.
-- Anthropic organization costs are fetched when `ANTHROPIC_ADMIN_API_KEY` exists.
-- OpenAI organization costs are fetched when `OPENAI_ADMIN_API_KEY` or `OPENAI_API_KEY` exists.
-- Claude/Codex subscription readiness comes from CLI probes, not billing APIs.
-- Missing credentials return stable `not_configured` fields.
-
-`GET /api/usage/subscriptions`
-
-Returns only the cached CLI subscription probe payload. `?refresh=true` bypasses cache.
-
-```ts
-{
-  generated_at: string
-  ttl_seconds: number
-  providers: {
-    codex: SubscriptionProvider
-    claude: SubscriptionProvider
+  "period": "current_month_utc",
+  "generated_at": "2026-04-22T20:00:00Z",
+  "providers": [
+    {
+      "provider": "copilot",
+      "label": "GitHub Copilot",
+      "period": "current_month_utc",
+      "unit": "premium_requests",
+      "used": 12,
+      "limit_or_credits": 300,
+      "percent_used": 4,
+      "status": "ok",
+      "wired": true,
+      "details": {
+        "soft_threshold_percent": 60,
+        "hard_threshold_percent": 90,
+        "hard_override_enabled": false,
+        "enforced": false
+      }
+    },
+    {
+      "provider": "claude",
+      "label": "Claude",
+      "period": "current_month_utc",
+      "unit": "calls",
+      "used": 0,
+      "limit_or_credits": null,
+      "percent_used": null,
+      "status": "auth_ok_billing_not_configured",
+      "wired": false,
+      "details": {
+        "reason": "ANTHROPIC_ADMIN_API_KEY is not set",
+        "amount_usd": null,
+        "currency": null,
+        "source": "anthropic_admin_cost_report",
+        "subscription": {
+          "provider": "claude",
+          "label": "Claude Code",
+          "billing_kind": "subscription_auth",
+          "aggregate_status": "ok",
+          "hosts": [
+            {
+              "host": "local",
+              "command": "claude auth status",
+              "status": "ok",
+              "authenticated": true,
+              "auth_method": "claude.ai",
+              "subscription_type": "pro",
+              "account": "daniel@example.com",
+              "version": "2.1.117 (Claude Code)",
+              "detail": null
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "subscriptions": {
+    "generated_at": "2026-04-22T20:00:00Z",
+    "ttl_seconds": 60,
+    "providers": {
+      "codex": { "...": "same SubscriptionProvider shape" },
+      "claude": { "...": "same SubscriptionProvider shape" }
+    }
   }
 }
 ```
 
-`SubscriptionProvider`:
+Provider IDs are stable: `copilot`, `claude`, `codex`, `gemini`, `openrouter`.
 
-```ts
+Provider status values currently used: `ok`, `warn`, `soft_limit`, `hard_limit`, `auth_ok_billing_not_configured`, `not_configured`, `unavailable`.
+
+### GET /api/usage/subscriptions
+
+Returns only the cached subscription/auth probe payload. Query `?refresh=true` bypasses the in-memory TTL and runs probes immediately.
+
+Response:
+
+```json
 {
-  provider: "codex" | "claude"
-  label: string
-  billing_kind: "subscription_auth"
-  aggregate_status: "ok" | "degraded" | "unavailable"
-  hosts: Array<{
-    host: "local" | "winpc" | string
-    local_hostname: string | null
-    local_platform: string | null
-    command: string
-    status: "ok" | "degraded" | "unavailable"
-    exit_code: number | null
-    duration_ms: number
-    checked_at: string
-    authenticated: boolean | null
-    auth_method: string | null
-    subscription_type: string | null
-    account: string | null
-    version: string | null
-    detail: string | null
-  }>
+  "generated_at": "2026-04-22T20:00:00Z",
+  "ttl_seconds": 60,
+  "providers": {
+    "codex": {
+      "provider": "codex",
+      "label": "Codex",
+      "billing_kind": "subscription_auth",
+      "aggregate_status": "ok",
+      "hosts": [
+        {
+          "host": "local",
+          "local_hostname": "Daniels-MacBook-Pro.local",
+          "local_platform": "darwin",
+          "command": "codex login status",
+          "status": "ok",
+          "exit_code": 0,
+          "duration_ms": 32,
+          "checked_at": "2026-04-22T20:00:00Z",
+          "authenticated": true,
+          "auth_method": "Logged in using ChatGPT",
+          "subscription_type": null,
+          "account": null,
+          "version": "codex-cli 0.122.0",
+          "detail": null
+        }
+      ]
+    }
+  }
 }
 ```
+
+`aggregate_status` and per-host `status` values: `ok`, `degraded`, `unavailable`. `degraded` includes a capped `detail` string suitable for a troubleshooting expander. Current known limitation: Codex CLI exposes ChatGPT login readiness but not a first-class plan name; Claude Code exposes `subscriptionType` when `claude auth status` returns it; Gemini CLI currently uses non-invasive OAuth credential presence as the auth probe.
 
 ## Syncthing
 
-`GET /api/syncthing/summary`
+These endpoints are read-only. First slice reads Sync Guard reports under `llm-workspace/health/sync-guard/hosts/*/latest.json` instead of contacting every Syncthing REST API directly.
 
-Read-only summary sourced from Sync Guard reports under `llm-workspace/health/sync-guard/hosts/*/latest.json`.
+### GET /api/syncthing/summary
 
-```ts
+Response:
+
+```json
 {
-  generated_at: string
-  source: "sync_guard_reports"
-  devices: Array<{
-    host: string
-    status: "ok" | "degraded" | "unavailable" | "unknown"
-    timestamp: string | null
-    syncthing_available: boolean
-    conflict_count: number | null
-    junk_count: number | null
-    folders: Array<{
-      folder_id: string
-      state: string | null
-      need_total_items: number | null
-      need_bytes: number | null
-      errors: number | null
-      pull_errors: number | null
-      global_total_items: number | null
-      local_total_items: number | null
-    }>
-    connections: Array<{
-      device_id: string
-      connected: boolean
-      address: string | null
-      client_version: string | null
-      paused: boolean
-      at: string | null
-    }>
-    source: string
-  }>
+  "generated_at": "2026-04-22T20:00:00Z",
+  "source": "sync_guard_reports",
+  "devices": [
+    {
+      "host": "serrano",
+      "status": "ok",
+      "timestamp": "2026-04-22T16:16:03",
+      "syncthing_available": true,
+      "conflict_count": 0,
+      "junk_count": 0,
+      "folders": [
+        {
+          "folder_id": "llm-workspace",
+          "state": "idle",
+          "need_total_items": 0,
+          "need_bytes": 0,
+          "errors": 0,
+          "pull_errors": 0,
+          "global_total_items": 678,
+          "local_total_items": 678
+        }
+      ],
+      "connections": [
+        {
+          "device_id": "...",
+          "connected": true,
+          "address": "192.168.1.192:22000",
+          "client_version": "v2.0.16",
+          "paused": false,
+          "at": "2026-04-22T16:16:03-04:00"
+        }
+      ],
+      "source": "/home/danielju/llm-workspace/health/sync-guard/hosts/serrano/latest.json"
+    }
+  ]
 }
 ```
 
-`GET /api/syncthing/conflicts`
+Expected devices with no report may appear with `status: "unknown"` and `source: "expected_device"`.
 
-```ts
+### GET /api/syncthing/conflicts
+
+Response:
+
+```json
 {
-  generated_at: string
-  source: "sync_guard_reports"
-  conflicts: Array<{
-    path: string
-    canonical_path: string | null
-    folder_id: "vault-combo" | "7lf7x-urjpx" | "llm-workspace" | null
-    devices: string[]
-    mtimes: Record<string, string>
-    reason: string | null
-    review_dir: string | null
-  }>
+  "generated_at": "2026-04-22T20:00:00Z",
+  "source": "sync_guard_reports",
+  "conflicts": [
+    {
+      "path": "/home/danielju/llm-workspace/foo.sync-conflict-...",
+      "canonical_path": "/home/danielju/llm-workspace/foo.md",
+      "folder_id": "llm-workspace",
+      "devices": ["serrano"],
+      "mtimes": { "serrano": "2026-04-22T20:00:00Z" },
+      "reason": "manual text merge required",
+      "review_dir": "/home/danielju/llm-workspace/health/sync-guard/review/..."
+    }
+  ]
 }
 ```
 
-Conflict resolution actions are not exposed yet; current endpoints are read-only.
+Folder IDs of interest: `vault-combo`, `7lf7x-urjpx`, `llm-workspace`.
 
-`POST /api/syncthing/conflicts/resolve`
+`7lf7x-urjpx` is the Syncthing folder ID for the Sensitive vault.
 
-Resolves one conflict file and writes reversible backups under the backend runtime directory, outside Syncthing:
+### POST /api/syncthing/conflicts/resolve
 
-```text
-<database_dir>/syncthing-conflict-resolution-backups/
-```
+Resolve one conflict file. Backups are written outside Syncthing under the backend runtime directory: `<database_dir>/syncthing-conflict-resolution-backups/`.
 
-Body:
+Request body:
 
-```ts
-{
-  path: string
-  action: "keep_canonical" | "keep_conflict" | "keep_both" | "stage_review"
-  note?: string | null
-}
-```
+| Field | Type | Description |
+|---|---|---|
+| `path` | string | Conflict file path |
+| `action` | `"keep_canonical"`, `"keep_conflict"`, `"keep_both"`, or `"stage_review"` | Resolution action |
+| `note` | string or null | Optional note stored in the backup manifest |
 
 Actions:
 
@@ -415,210 +665,491 @@ Actions:
 
 Response:
 
-```ts
+```json
 {
-  status: "resolved" | "staged"
-  action: string
-  path: string
-  canonical_path: string | null
-  result_path: string | null
-  backup_dir: string
-  backups: Array<{ label: string, source: string, backup: string }>
+  "status": "resolved",
+  "action": "keep_both",
+  "path": "...",
+  "canonical_path": "...",
+  "result_path": "...",
+  "backup_dir": "/home/danielju/.local/share/delamain/syncthing-conflict-resolution-backups/...",
+  "backups": [
+    { "label": "conflict", "source": "...", "backup": "..." }
+  ]
 }
 ```
-
-`7lf7x-urjpx` is the Syncthing folder ID for the Sensitive vault. Conflict resolution is an explicit REST/user action and is audited.
-
-## Quick Actions
-
-`GET /api/actions`
-
-Returns `{ actions: ActionSpec[] }`.
-
-Current action IDs:
-
-```text
-health.backend
-health.helpers
-ref.status
-ref.reconcile_dry_run
-vault_index.status
-vault_index.build
-sync_guard.status
-subscription.codex_status
-subscription.claude_status
-subscription.gemini_status
-winpc.subscription_codex_status
-winpc.subscription_claude_status
-winpc.hostname
-winpc.date
-```
-
-`POST /api/actions/{action_id}`
-
-Optional body: `{ conversation_id?: string | null }`. Returns an action run result with `status`, previews, artifact paths, `stdout_bytes`, `stderr_bytes`, `writes`, and `remote`.
-
-Action statuses: `success`, `failed`, `timeout`, `denied`.
-
-`GET /api/action-runs/{action_run_id}`
-
-Returns persisted action metadata.
-
-`GET /api/action-runs/{action_run_id}/stdout`
-
-Returns full stdout as `text/plain`.
-
-`GET /api/action-runs/{action_run_id}/stderr`
-
-Returns full stderr as `text/plain`.
-
-`GET /api/conversations/{conversation_id}/action-runs`
-
-Returns action runs associated with that conversation.
 
 ## Permissions
 
-`GET /api/runs/{run_id}/permissions`
+Current tool policy auto-runs enabled tools by default. Each tool can be configured with `approval_policy: "auto" | "confirm"`. `confirm` pauses the run at `waiting_approval`, emits `permission.requested`, and resumes after approval through `POST /api/permissions/{permission_id}/resolve`.
 
-Returns `PermissionOut[]`.
+### GET /api/runs/{run_id}/permissions
 
-`POST /api/permissions/{permission_id}/resolve`
+Returns all permissions associated with a run.
 
-Body: `{ decision: "approved" | "denied", note?: string | null, resolver?: string | null }`
+Response: `[PermissionOut, ...]`
 
-Returns `PermissionOut` and emits `permission.resolved`.
+### POST /api/permissions/{permission_id}/resolve
 
-`PermissionOut`:
+Request body:
 
-```ts
+| Field | Type | Description |
+|---|---|---|
+| `decision` | `"approved"` or `"denied"` | User decision |
+| `note` | string or null | Optional note |
+| `resolver` | string or null | Resolver label, defaults to `"user"` |
+
+Response: `PermissionOut`. Emits `permission.resolved`.
+
+### PermissionOut Shape
+
+```json
 {
-  id: string
-  conversation_id: string
-  run_id: string
-  kind: string
-  summary: string
-  details_json: string
-  status: "pending" | "resolved"
-  decision: string | null
-  resolver: string | null
-  note: string | null
-  created_at: string
-  resolved_at: string | null
+  "id": "perm_...",
+  "conversation_id": "conv_...",
+  "run_id": "run_...",
+  "kind": "tool",
+  "summary": "Approve shell command",
+  "details_json": "{}",
+  "status": "pending",
+  "decision": null,
+  "resolver": null,
+  "note": null,
+  "created_at": "...",
+  "resolved_at": null
 }
 ```
-
-Model tools auto-run by default. Each tool can be configured with `approval_policy: "auto" | "confirm"`. In `confirm` mode, the run pauses at `waiting_approval`, emits `permission.requested`, and resumes after `POST /api/permissions/{permission_id}/resolve` approves it. Denial fails that tool call.
 
 ## Settings
 
-`GET /api/settings`
+### GET /api/settings
 
-Returns `{ settings: { context_mode, title_generation_enabled, model_default, copilot_budget_hard_override_enabled } }`.
+Returns current runtime settings.
 
-`PATCH /api/settings`
+Response:
 
-Accepts `context_mode`, `title_generation_enabled`, `model_default`, and `copilot_budget_hard_override_enabled`.
+```json
+{
+  "settings": {
+    "context_mode": "normal",
+    "title_generation_enabled": true,
+    "model_default": "github_copilot/gpt-5.4-mini",
+    "copilot_budget_hard_override_enabled": false
+  }
+}
+```
 
-`GET /api/settings/models`
+### PATCH /api/settings
+
+Update runtime settings.
+
+Request body:
+
+| Field | Type | Description |
+|---|---|---|
+| `values` | object | Key-value pairs of settings to update |
+| `conversation_id` | string or null | For audit event association |
+
+Supported keys: `context_mode` (`"normal"` or `"blank_slate"`), `title_generation_enabled` (boolean), `model_default` (must be a configured route), and `copilot_budget_hard_override_enabled` (boolean).
+
+### GET /api/settings/models
 
 Returns configured model routes and route families.
 
-`GET /api/settings/budget`
+Response:
 
-Returns Copilot current-month premium request usage and soft/hard threshold state. The hard threshold is enforced unless `copilot_budget_hard_override_enabled` is true.
-
-`GET /api/settings/tools`
-
-Returns tool enabled state, risk metadata, and approval configurability.
-
-```ts
+```json
 {
-  tools: Array<{
-    name: string
-    description: string
-    enabled: boolean
-    risk: "low" | "write" | "shell" | string
-    approval_policy_default: "auto"
-    approval_policy: "auto" | "confirm"
-    approval_policy_options: ["auto", "confirm"]
-  }>
+  "default": "github_copilot/gpt-5.4-mini",
+  "fallback_high_volume": "github_copilot/gpt-5-mini",
+  "fallback_cheap": "github_copilot/claude-haiku-4.5",
+  "paid_fallback": "openrouter/deepseek/deepseek-v3.2"
 }
 ```
 
-`PATCH /api/settings/tools/{tool_name}`
+### GET /api/settings/budget
 
-Enables/disables a backend tool and/or changes its approval policy.
+Returns approximate Copilot request tracking for the current UTC month. This counts completed persisted `model_calls` rows whose route starts with `github_copilot/`; it is request-count tracking, not authoritative provider billing.
 
-Body:
+Response:
 
-```ts
+```json
 {
-  enabled?: boolean
-  approval_policy?: "auto" | "confirm"
-  conversation_id?: string | null
+  "copilot_budget": {
+    "period": "current_month_utc",
+    "used_premium_requests": 1,
+    "monthly_premium_requests": 300,
+    "percent_used": 0.33,
+    "soft_threshold_percent": 60,
+    "hard_threshold_percent": 90,
+    "status": "ok",
+    "hard_override_enabled": false,
+    "enforced": false
+  }
 }
 ```
 
-## Context
+Soft budget threshold emits audit only. Hard threshold skips Copilot routes and falls back to the configured paid route unless `copilot_budget_hard_override_enabled` is true.
 
-`GET /api/context/current`
+### GET /api/settings/tools
 
-Returns active context items for `normal` or `blank_slate` mode.
+Returns all backend tools, enabled state, risk metadata, and approval policy.
 
-`GET /api/context/files/system-context`
+Response:
 
-Returns editable system context file content and metadata.
+```json
+{
+  "tools": [
+    {
+      "name": "get_now",
+      "description": "Return Daniel's live wall-clock time.",
+      "enabled": true,
+      "risk": "low",
+      "approval_policy_default": "auto",
+      "approval_policy": "auto",
+      "approval_policy_options": ["auto", "confirm"]
+    }
+  ]
+}
+```
 
-`PATCH /api/context/files/system-context`
+`patch_text_file` is enabled by default with `risk: "write"`. `run_shell` is available but disabled by default with `risk: "shell"`. Tools default to autonomous `approval_policy: "auto"`; the UI can set `confirm` for a specific tool when Daniel wants an approval stop.
 
-Writes system context with backup and optional audit.
+### PATCH /api/settings/tools/{tool_name}
 
-`GET /api/context/files/short-term-continuity`
+Enable/disable a tool and/or update approval policy.
 
-Returns editable short-term continuity file content and metadata.
+Request body:
 
-`PATCH /api/context/files/short-term-continuity`
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean or omitted | New enabled state |
+| `approval_policy` | `"auto"` or `"confirm"` | Tool approval policy |
+| `conversation_id` | string or null | For audit event association |
 
-Writes short-term continuity with backup and optional audit.
+Disabled tools are omitted from model schemas and denied if called. `confirm` tools emit `permission.requested` and set the run to `waiting_approval` until resolved.
+
+## Context Files
+
+### GET /api/context/current
+
+Query param: `context_mode=normal` or `context_mode=blank_slate`.
+
+Returns the list of context items that would be loaded for a run.
+
+Response:
+
+```json
+{
+  "context_mode": "normal",
+  "items": [
+    {
+      "path": "/home/danielju/llm-workspace/context/system-context.md",
+      "mode": "system_context",
+      "included": true,
+      "missing": false,
+      "byte_count": 9522,
+      "sha256": "..."
+    },
+    {
+      "path": "/home/danielju/llm-workspace/context/short-term/continuity.md",
+      "mode": "short_term_continuity",
+      "included": false,
+      "missing": true,
+      "byte_count": null,
+      "sha256": null
+    }
+  ]
+}
+```
+
+### GET /api/context/files/{file_id}
+
+Read a context file. Valid file IDs: `system-context`, `short-term-continuity`.
+
+Response:
+
+```json
+{
+  "id": "system-context",
+  "mode": "system_context",
+  "path": "...",
+  "exists": true,
+  "content": "...",
+  "byte_count": 9522,
+  "sha256": "..."
+}
+```
+
+### PATCH /api/context/files/{file_id}
+
+Write a context file. Creates a timestamped backup before replacing.
+
+Request body:
+
+| Field | Type | Description |
+|---|---|---|
+| `content` | string | New file content |
+| `conversation_id` | string or null | For audit event association |
+
+Returns the updated file metadata (same shape as GET).
 
 ## Workers
 
-`GET /api/workers/types`
+### GET /api/workers/types
 
-Worker types: `opencode`, `claude_code`, `codex_cli`, `gemini_cli`, `shell`, `winpc_shell`.
+Returns available worker types.
 
-Launch flags:
+Response:
 
-- `claude_code`: `claude --dangerously-skip-permissions`
-- `codex_cli`: `codex --yolo`
-- `gemini_cli`: `gemini --yolo`
+```json
+{
+  "types": [
+    {
+      "id": "shell",
+      "label": "Shell",
+      "description": "Start a plain bash shell session on serrano.",
+      "command_template": ["/bin/bash", "--login"],
+      "host": "serrano"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "description": "Start an OpenCode agent session on serrano.",
+      "command_template": ["/home/danielju/.local/bin/opencode"],
+      "host": "serrano"
+    },
+    {
+      "id": "claude_code",
+      "label": "Claude Code",
+      "description": "Start a Claude Code agent session on serrano with permissions bypassed.",
+      "command_template": ["claude", "--dangerously-skip-permissions"],
+      "host": "serrano"
+    },
+    {
+      "id": "codex_cli",
+      "label": "Codex CLI",
+      "description": "Start a Codex CLI agent session on serrano in YOLO mode.",
+      "command_template": ["codex", "--yolo"],
+      "host": "serrano"
+    },
+    {
+      "id": "gemini_cli",
+      "label": "Gemini CLI",
+      "description": "Start a Gemini CLI agent session on serrano in YOLO mode.",
+      "command_template": ["gemini", "--yolo"],
+      "host": "serrano"
+    },
+    {
+      "id": "winpc_shell",
+      "label": "WinPC Shell",
+      "description": "Start a plain bash shell session in WSL tmux on winpc.",
+      "command_template": ["/bin/bash", "--login"],
+      "host": "winpc"
+    }
+  ]
+}
+```
 
-`GET /api/workers`
+### GET /api/workers
 
-Lists workers; supports `status` and `conversation_id` filters.
+List all workers. Filterable by query params.
 
-`POST /api/workers`
+Query params:
 
-Starts a worker.
+| Param | Type | Description |
+|---|---|---|
+| `status` | string or null | Filter by status |
+| `conversation_id` | string or null | Filter by conversation |
 
-`GET /api/workers/{worker_id}`
+Response:
 
-Returns worker metadata; `?refresh=true` checks liveness.
+```json
+{
+  "workers": [WorkerOut, ...]
+}
+```
 
-`POST /api/workers/{worker_id}/stop`
+### POST /api/workers
 
-Graceful stop.
+Start a new worker session. Returns `202 Accepted`.
 
-`DELETE /api/workers/{worker_id}`
+Request body:
 
-Kill worker session.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `worker_type` | string | required | One of the registered type IDs |
+| `name` | string or null | auto-generated | Human-readable name (must be unique among running workers) |
+| `conversation_id` | string or null | null | Associate with a conversation for audit events |
 
-`GET /api/workers/{worker_id}/output`
+Response: `WorkerOut`
 
-Returns captured tmux output.
+### GET /api/workers/{worker_id}
 
-## Health
+Get worker details. Add `?refresh=true` to check tmux liveness and update status if the session has died.
 
-`GET /api/health`
+Response: `WorkerOut`
 
-Returns backend status, SQLite health, LiteLLM status/version, config summary, Copilot budget summary, and deterministic helper availability.
+### POST /api/workers/{worker_id}/stop
+
+Graceful stop: sends `Ctrl-C` then `exit` to the tmux session. Returns current status. If the session is still alive after the stop attempt, status becomes `stopping`.
+
+Response: `WorkerOut`
+
+### DELETE /api/workers/{worker_id}
+
+Force kill: destroys the tmux session immediately.
+
+Response: `WorkerOut`
+
+### GET /api/workers/{worker_id}/output
+
+Capture the current tmux pane content.
+
+Query params:
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `lines` | integer (1-2000) | 200 | Number of lines to capture |
+
+Response:
+
+```json
+{
+  "worker_id": "worker_...",
+  "name": "my-shell",
+  "alive": true,
+  "lines_requested": 200,
+  "output": "danielju@serrano:~$ ..."
+}
+```
+
+### WorkerOut Shape
+
+```json
+{
+  "id": "worker_bd039d15e2eb",
+  "status": "running",
+  "name": "my-shell",
+  "worker_type": "shell",
+  "host": "serrano",
+  "tmux_session": "dw-worker_bd039d15e2eb",
+  "tmux_socket": "/home/danielju/.local/share/delamain/workers.sock",
+  "conversation_id": null,
+  "command": "/bin/bash --login",
+  "pid": null,
+  "exit_code": null,
+  "error_message": null,
+  "stopped_at": null,
+  "metadata": {},
+  "created_at": "2026-04-22T07:29:38.841Z",
+  "updated_at": "2026-04-22T07:29:38.841Z"
+}
+```
+
+### Worker Statuses
+
+| Status | Description |
+|---|---|
+| `starting` | tmux session creation in progress |
+| `running` | tmux session is alive |
+| `stopping` | Graceful stop sent, session still alive |
+| `stopped` | Session terminated |
+| `failed` | Session creation or execution failed |
+
+## Error Responses
+
+All error responses use standard HTTP status codes with a JSON body:
+
+```json
+{
+  "detail": "Human-readable error message"
+}
+```
+
+Common codes:
+
+| Code | Meaning |
+|---|---|
+| 400 | Bad request / validation error |
+| 403 | Policy denied (Sensitive, path policy) |
+| 404 | Resource not found |
+| 500 | Internal server error |
+
+## Audit Events
+
+Many endpoints emit `audit` events into the SSE stream when a `conversation_id` is provided. The frontend can display these as system notifications.
+
+Audit event payload shape:
+
+```json
+{
+  "action": "worker.started",
+  "summary": "Worker my-shell (shell) started",
+  "worker_id": "worker_...",
+  "name": "my-shell",
+  "worker_type": "shell",
+  "status": "running"
+}
+```
+
+Known audit actions:
+
+| Action | Source |
+|---|---|
+| `sensitive.unlocked` | Sensitive unlock |
+| `sensitive.locked` | Sensitive lock |
+| `sensitive.access_allowed` | Tool accessed Sensitive |
+| `sensitive.access_denied` | Tool denied Sensitive |
+| `quick_action.started` | Action execution started |
+| `quick_action.completed` | Action completed |
+| `quick_action.failed` | Action failed |
+| `quick_action.timeout` | Action timed out |
+| `quick_action.denied` | Action policy denied |
+| `settings.updated` | Settings changed |
+| `settings.tool_updated` | Tool enabled/disabled |
+| `context.file_updated` | Context file written |
+| `model.reported_route_mismatch` | Provider route mismatch |
+| `worker.started` | Worker started |
+| `worker.failed` | Worker start failed |
+| `worker.stop_requested` | Worker stop initiated |
+| `worker.killed` | Worker force killed |
+
+## Frontend Implementation Notes
+
+### Conversation Page
+
+1. Fetch conversation and messages on load.
+2. Connect to conversation SSE stream for live updates.
+3. Render messages by role; tool calls can be collapsible.
+4. Show run status indicator (spinner for `queued`/`running`).
+5. Provide cancel/retry buttons based on run status.
+
+### Settings Panel
+
+1. Fetch settings, models, and tools on load.
+2. Allow toggling context mode, title generation, and model default.
+3. Allow enabling/disabling individual tools.
+4. Show context file content with edit capability.
+
+### Actions Panel
+
+1. Fetch action list on load.
+2. Provide run buttons per action.
+3. Show action run results inline with stdout/stderr previews.
+4. Link to full stdout/stderr via artifact endpoints.
+
+### Workers Panel
+
+1. Fetch worker types and active workers on load.
+2. Provide start buttons per type with optional name input.
+3. Show worker status with refresh capability.
+4. Provide stop/kill buttons.
+5. Show captured pane output (polling or on-demand).
+6. Workers panel is useful for launching background agent sessions that work independently of the main conversation.
+
+### Sensitive Gate
+
+1. Show a lock/unlock toggle per conversation.
+2. Locked is the default; unlocking requires explicit user action.
+3. Display audit events for Sensitive access attempts.
