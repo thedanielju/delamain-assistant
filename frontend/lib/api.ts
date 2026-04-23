@@ -1,17 +1,27 @@
 import { API_BASE, HEALTH_PROBE_TIMEOUT_MS } from './config'
 import type {
+  AuthRequiredDetail,
   BackendAction,
   BackendActionRun,
   BackendContextCurrent,
   BackendContextFile,
   BackendContextMode,
   BackendConversation,
+  BackendCopilotBudget,
+  BackendFolder,
   BackendHealth,
   BackendMessage,
   BackendModelRoutes,
+  BackendPermission,
   BackendRun,
   BackendSettings,
+  BackendSubscriptionSummary,
+  BackendSyncthingConflicts,
+  BackendSyncthingResolveAction,
+  BackendSyncthingResolveResponse,
+  BackendSyncthingSummary,
   BackendTool,
+  BackendUsageResponse,
   BackendWorker,
   BackendWorkerType,
   SubmitPromptResponse,
@@ -36,11 +46,30 @@ export class BackendUnreachableError extends Error {
   }
 }
 
-async function request<T>(
-  path: string,
-  init: RequestInit & { timeoutMs?: number } = {}
-): Promise<T> {
-  const { timeoutMs, ...rest } = init
+export class AuthRequiredError extends BackendError {
+  redirectUrl?: string
+  constructor(detail: AuthRequiredDetail, status: number, body: unknown) {
+    super(detail.message, status, body)
+    this.redirectUrl = detail.redirect_url
+  }
+}
+
+function asAuthRequired(body: unknown): AuthRequiredDetail | null {
+  if (!body || typeof body !== 'object') return null
+  const detail = (body as { detail?: unknown }).detail
+  if (!detail || typeof detail !== 'object') return null
+  const d = detail as Record<string, unknown>
+  if (d.code === 'auth_required') return d as unknown as AuthRequiredDetail
+  return null
+}
+
+interface RequestInitExt extends RequestInit {
+  timeoutMs?: number
+  asText?: boolean
+}
+
+async function request<T>(path: string, init: RequestInitExt = {}): Promise<T> {
+  const { timeoutMs, asText, ...rest } = init
   const controller = timeoutMs ? new AbortController() : undefined
   const timeoutId = controller && setTimeout(() => controller.abort(), timeoutMs)
 
@@ -48,6 +77,7 @@ async function request<T>(
   try {
     res = await fetch(`${API_BASE}${path}`, {
       ...rest,
+      credentials: rest.credentials ?? 'same-origin',
       headers: {
         'Content-Type': 'application/json',
         ...(rest.headers ?? {}),
@@ -67,6 +97,14 @@ async function request<T>(
     } catch {
       /* no-op */
     }
+    const authDetail = asAuthRequired(body)
+    if (authDetail || res.status === 401) {
+      throw new AuthRequiredError(
+        authDetail ?? { code: 'auth_required', message: res.statusText || 'Auth required' },
+        res.status,
+        body
+      )
+    }
     const detail =
       (body && typeof body === 'object' && 'detail' in body && (body as { detail: unknown }).detail) ||
       res.statusText
@@ -74,11 +112,11 @@ async function request<T>(
   }
 
   if (res.status === 204) return undefined as T
+  if (asText) return (await res.text()) as unknown as T
   return (await res.json()) as T
 }
 
 export const api = {
-  // ── Health ─────────────────────────────────────────────────────────────────
   health(): Promise<BackendHealth> {
     return request<BackendHealth>('/health', { timeoutMs: HEALTH_PROBE_TIMEOUT_MS })
   },
@@ -92,6 +130,7 @@ export const api = {
     context_mode?: BackendContextMode
     model_route?: string | null
     incognito_route?: boolean
+    folder_id?: string | null
   }): Promise<BackendConversation> {
     return request<BackendConversation>('/conversations', {
       method: 'POST',
@@ -103,7 +142,7 @@ export const api = {
   },
   patchConversation(
     id: string,
-    body: { title?: string | null; archived?: boolean | null }
+    body: { title?: string | null; archived?: boolean | null; folder_id?: string | null }
   ): Promise<BackendConversation> {
     return request<BackendConversation>(`/conversations/${id}`, {
       method: 'PATCH',
@@ -112,6 +151,29 @@ export const api = {
   },
   deleteConversation(id: string): Promise<void> {
     return request<void>(`/conversations/${id}`, { method: 'DELETE' })
+  },
+
+  // ── Folders ────────────────────────────────────────────────────────────────
+  listFolders(): Promise<BackendFolder[]> {
+    return request<BackendFolder[]>('/folders')
+  },
+  createFolder(body: { name: string; parent_id?: string | null }): Promise<BackendFolder> {
+    return request<BackendFolder>('/folders', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+  patchFolder(
+    id: string,
+    body: { name?: string | null; parent_id?: string | null }
+  ): Promise<BackendFolder> {
+    return request<BackendFolder>(`/folders/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+  },
+  deleteFolder(id: string): Promise<void> {
+    return request<void>(`/folders/${id}`, { method: 'DELETE' })
   },
 
   // ── Messages / runs ─────────────────────────────────────────────────────────
@@ -145,6 +207,20 @@ export const api = {
     return request<BackendRun>(`/runs/${runId}/retry`, { method: 'POST' })
   },
 
+  // ── Permissions ────────────────────────────────────────────────────────────
+  listRunPermissions(runId: string): Promise<BackendPermission[]> {
+    return request<BackendPermission[]>(`/runs/${runId}/permissions`)
+  },
+  resolvePermission(
+    permissionId: string,
+    body: { decision: 'approved' | 'denied'; note?: string | null; resolver?: string | null }
+  ): Promise<BackendPermission> {
+    return request<BackendPermission>(`/permissions/${permissionId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+
   // ── Sensitive ──────────────────────────────────────────────────────────────
   unlockSensitive(conversationId: string): Promise<{ sensitive_unlocked: boolean }> {
     return request(`/conversations/${conversationId}/sensitive/unlock`, { method: 'POST' })
@@ -166,13 +242,23 @@ export const api = {
   getModels(): Promise<BackendModelRoutes> {
     return request<BackendModelRoutes>('/settings/models')
   },
+  getBudget(): Promise<{ copilot_budget: BackendCopilotBudget }> {
+    return request<{ copilot_budget: BackendCopilotBudget }>('/settings/budget')
+  },
   getTools(): Promise<{ tools: BackendTool[] }> {
     return request<{ tools: BackendTool[] }>('/settings/tools')
   },
-  patchTool(name: string, enabled: boolean, conversationId?: string) {
+  patchTool(
+    name: string,
+    body: {
+      enabled?: boolean
+      approval_policy?: 'auto' | 'confirm'
+      conversation_id?: string | null
+    }
+  ) {
     return request<{ tool: BackendTool }>(`/settings/tools/${encodeURIComponent(name)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ enabled, conversation_id: conversationId ?? null }),
+      body: JSON.stringify(body),
     })
   },
 
@@ -206,10 +292,14 @@ export const api = {
   getActionRun(actionRunId: string): Promise<BackendActionRun & { conversation_id: string | null }> {
     return request(`/action-runs/${encodeURIComponent(actionRunId)}`)
   },
+  getActionRunStdout(actionRunId: string): Promise<string> {
+    return request<string>(`/action-runs/${encodeURIComponent(actionRunId)}/stdout`, { asText: true })
+  },
+  getActionRunStderr(actionRunId: string): Promise<string> {
+    return request<string>(`/action-runs/${encodeURIComponent(actionRunId)}/stderr`, { asText: true })
+  },
   listConversationActionRuns(conversationId: string) {
-    return request<BackendActionRun[]>(
-      `/conversations/${conversationId}/action-runs`
-    )
+    return request<BackendActionRun[]>(`/conversations/${conversationId}/action-runs`)
   },
 
   // ── Workers ────────────────────────────────────────────────────────────────
@@ -250,6 +340,34 @@ export const api = {
       lines_requested: number
       output: string
     }>(`/workers/${id}/output?lines=${lines}`)
+  },
+
+  // ── Usage ──────────────────────────────────────────────────────────────────
+  getUsage(): Promise<BackendUsageResponse> {
+    return request<BackendUsageResponse>('/usage')
+  },
+  getSubscriptions(refresh = false): Promise<BackendSubscriptionSummary> {
+    return request<BackendSubscriptionSummary>(
+      `/usage/subscriptions${refresh ? '?refresh=true' : ''}`
+    )
+  },
+
+  // ── Syncthing ──────────────────────────────────────────────────────────────
+  getSyncthingSummary(): Promise<BackendSyncthingSummary> {
+    return request<BackendSyncthingSummary>('/syncthing/summary')
+  },
+  getSyncthingConflicts(): Promise<BackendSyncthingConflicts> {
+    return request<BackendSyncthingConflicts>('/syncthing/conflicts')
+  },
+  resolveSyncthingConflict(body: {
+    path: string
+    action: BackendSyncthingResolveAction
+    note?: string | null
+  }): Promise<BackendSyncthingResolveResponse> {
+    return request<BackendSyncthingResolveResponse>('/syncthing/conflicts/resolve', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
   },
 }
 

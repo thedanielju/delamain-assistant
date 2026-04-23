@@ -8,9 +8,35 @@ interface UseSSEOptions {
   onEvent: (event: BackendSSEEvent) => void
   onError?: (err: Event) => void
   enabled?: boolean
+  /**
+   * Key under which the latest event id is persisted in localStorage so the
+   * stream can replay missed events after a full reload. Usually the
+   * conversation or run id.
+   */
+  resumeKey?: string | null
 }
 
-export function useSSE({ path, onEvent, onError, enabled = true }: UseSSEOptions) {
+const LS_PREFIX = 'delamain:sse:last-event-id:'
+
+function loadLastEventId(key: string | null | undefined): string | null {
+  if (!key || typeof window === 'undefined') return null
+  try {
+    return window.localStorage.getItem(LS_PREFIX + key)
+  } catch {
+    return null
+  }
+}
+
+function saveLastEventId(key: string | null | undefined, id: string): void {
+  if (!key || typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(LS_PREFIX + key, id)
+  } catch {
+    /* no-op */
+  }
+}
+
+export function useSSE({ path, onEvent, onError, enabled = true, resumeKey }: UseSSEOptions) {
   const lastEventIdRef = useRef<string | null>(null)
   const reconnectMsRef = useRef<number>(SSE_RECONNECT_MIN_MS)
   const sourceRef = useRef<EventSource | null>(null)
@@ -23,12 +49,17 @@ export function useSSE({ path, onEvent, onError, enabled = true }: UseSSEOptions
   useEffect(() => {
     if (!enabled || !path) return
 
+    lastEventIdRef.current = loadLastEventId(resumeKey)
+
     let cancelled = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
     const connect = () => {
       if (cancelled) return
-      const url = sseUrl(path)
+      const last = lastEventIdRef.current
+      const url = last
+        ? `${sseUrl(path)}?last_event_id=${encodeURIComponent(last)}`
+        : sseUrl(path)
       const source = new EventSource(url, { withCredentials: true })
       sourceRef.current = source
 
@@ -37,17 +68,27 @@ export function useSSE({ path, onEvent, onError, enabled = true }: UseSSEOptions
       }
 
       const handleEvent = (type: string) => (ev: MessageEvent) => {
-        if (ev.lastEventId) lastEventIdRef.current = ev.lastEventId
+        if (ev.lastEventId) {
+          lastEventIdRef.current = ev.lastEventId
+          saveLastEventId(resumeKey, ev.lastEventId)
+        }
         let payload: unknown = null
         try {
           payload = ev.data ? JSON.parse(ev.data) : null
         } catch {
           payload = ev.data
         }
+        const raw = (payload && typeof payload === 'object'
+          ? payload
+          : { value: payload }) as Record<string, unknown>
+        const inner =
+          raw.payload && typeof raw.payload === 'object'
+            ? (raw.payload as Record<string, unknown>)
+            : raw
         const event: BackendSSEEvent = {
           id: ev.lastEventId || undefined,
           type,
-          payload: (payload && typeof payload === 'object' ? payload : { value: payload }) as Record<string, unknown>,
+          payload: inner,
         }
         onEventRef.current(event)
       }
@@ -93,5 +134,5 @@ export function useSSE({ path, onEvent, onError, enabled = true }: UseSSEOptions
       sourceRef.current?.close()
       sourceRef.current = null
     }
-  }, [path, enabled])
+  }, [path, enabled, resumeKey])
 }

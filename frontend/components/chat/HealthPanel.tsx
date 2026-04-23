@@ -1,9 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { RefreshCw, CheckCircle, AlertTriangle, XCircle, HelpCircle } from 'lucide-react'
+import { RefreshCw, CheckCircle, AlertTriangle, XCircle, HelpCircle, FolderSync, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { HealthEntry, HealthStatus } from '@/lib/types'
+import type { HealthEntry, HealthStatus, SyncthingDevice } from '@/lib/types'
 
 const STATUS_ICON: Record<HealthStatus, React.ReactNode> = {
   ok: <CheckCircle size={12} className="text-[var(--accent-green)]" />,
@@ -19,12 +19,90 @@ const STATUS_DOT: Record<HealthStatus, string> = {
   unknown: 'bg-[#444444]',
 }
 
-interface HealthPanelProps {
-  entries: HealthEntry[]
-  onRefresh?: () => void
+const SYNCTHING_HOSTS: Array<SyncthingDevice['host']> = ['local', 'serrano', 'winpc', 'iphone']
+
+const SYNC_STATUS_DOT: Record<SyncthingDevice['status'], string> = {
+  ok: 'bg-[var(--accent-green)]',
+  degraded: 'bg-[var(--accent-blue)]',
+  unavailable: 'bg-[var(--accent-pink)]',
+  unknown: 'bg-[#444444]',
 }
 
-export function HealthPanel({ entries, onRefresh }: HealthPanelProps) {
+function SyncthingSummaryCard({
+  devices,
+  conflictCount,
+  onOpen,
+}: {
+  devices: SyncthingDevice[]
+  conflictCount: number
+  onOpen: () => void
+}) {
+  const byHost = new Map(devices.map((d) => [d.host, d]))
+
+  return (
+    <button
+      onClick={onOpen}
+      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-white/[0.07] bg-[#0d0d0d] hover:bg-white/[0.02] hover:border-white/[0.12] transition-all text-left"
+      aria-label="Open Syncthing panel"
+    >
+      <FolderSync size={12} className="text-[#555555] flex-shrink-0" />
+      <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+        <div className="flex items-center gap-3">
+          {SYNCTHING_HOSTS.map((host) => {
+            const dev = byHost.get(host)
+            const isStub = host === 'iphone' && !dev
+            const status: SyncthingDevice['status'] = dev?.status ?? 'unknown'
+            return (
+              <span key={host} className="flex items-center gap-1">
+                <span
+                  className={cn(
+                    'w-1.5 h-1.5 rounded-full inline-block',
+                    SYNC_STATUS_DOT[status],
+                    isStub && 'bg-[#2a2a2a]'
+                  )}
+                />
+                <span
+                  className={cn(
+                    'text-[10px] font-mono',
+                    isStub ? 'text-[#3a3a3a]' : 'text-[#888888]'
+                  )}
+                >
+                  {host}
+                </span>
+              </span>
+            )
+          })}
+        </div>
+        <p className="text-[9px] font-mono text-[#3a3a3a]">
+          {!byHost.has('iphone') && 'Awaiting iOS backend wiring'}
+          {!byHost.has('iphone') && conflictCount > 0 && ' · '}
+          {conflictCount > 0 && (
+            <span className="text-[var(--accent-pink)]">
+              {conflictCount} conflict{conflictCount === 1 ? '' : 's'}
+            </span>
+          )}
+        </p>
+      </div>
+      <ChevronRight size={11} className="text-[#444444] flex-shrink-0" />
+    </button>
+  )
+}
+
+interface HealthPanelProps {
+  entries: HealthEntry[]
+  syncthingDevices: SyncthingDevice[]
+  syncthingConflictCount: number
+  onRefresh?: () => void
+  onOpenSyncthing: () => void
+}
+
+export function HealthPanel({
+  entries,
+  syncthingDevices,
+  syncthingConflictCount,
+  onRefresh,
+  onOpenSyncthing,
+}: HealthPanelProps) {
   const [refreshing, setRefreshing] = useState(false)
 
   const handleRefresh = () => {
@@ -41,7 +119,14 @@ export function HealthPanel({ entries, onRefresh }: HealthPanelProps) {
   }
 
   return (
-    <div className="flex flex-col gap-4 py-2">
+    <div className="flex flex-col gap-4 py-2 px-4">
+      {/* Syncthing summary card */}
+      <SyncthingSummaryCard
+        devices={syncthingDevices}
+        conflictCount={syncthingConflictCount}
+        onOpen={onOpenSyncthing}
+      />
+
       {/* Summary row */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">

@@ -11,6 +11,7 @@ const GROUP_LABELS: Record<DirectActionGroup, string> = {
   vault_index: 'Vault Index',
   sync_guard: 'Sync Guard',
   winpc: 'WinPC',
+  subscription: 'Subscriptions',
 }
 
 const GROUP_ACCENT: Record<DirectActionGroup, string> = {
@@ -19,6 +20,7 @@ const GROUP_ACCENT: Record<DirectActionGroup, string> = {
   vault_index: 'var(--accent-blue)',
   sync_guard: 'var(--accent-purple)',
   winpc: 'var(--accent-pink)',
+  subscription: 'var(--accent-purple)',
 }
 
 interface DirectActionsBarProps {

@@ -25,6 +25,7 @@ export interface ChatMessage {
   toolCalls?: ToolCall[]
   /** tool calls rendered BEFORE this message chunk */
   toolCallsBefore?: ToolCall[]
+  activeToolCallId?: string
   /** run metadata */
   runId?: string
   runStatus?: RunStatus
@@ -44,9 +45,21 @@ export interface Conversation {
   id: string
   title: string
   timestamp: string
+  contextMode?: ContextMode
+  modelRoute?: string | null
+  incognitoRoute?: boolean
+  sensitiveUnlocked?: boolean
+  folderId?: string | null
+  archived?: boolean
   messages: ChatMessage[]
   active?: boolean
   runStatus?: RunStatus
+}
+
+export interface Folder {
+  id: string
+  name: string
+  parentId: string | null
 }
 
 export interface ContextFile {
@@ -67,6 +80,7 @@ export interface Tool {
   description: string
   enabled: boolean
   category?: 'read' | 'write' | 'ssh' | 'web' | 'other'
+  approvalPolicy?: 'auto' | 'confirm'
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────
@@ -89,6 +103,7 @@ export type DirectActionGroup =
   | 'vault_index'
   | 'sync_guard'
   | 'winpc'
+  | 'subscription'
 
 export interface DirectAction {
   id: string
@@ -106,12 +121,18 @@ export type WorkerStatus = 'running' | 'stopped' | 'idle' | 'capturing'
 export interface Worker {
   id: string
   name: string
-  type: 'codex' | 'opencode' | 'claude' | 'goose' | 'gemini' | 'gh_cli' | 'tmux' | 'generic'
+  type: 'opencode' | 'claude' | 'tmux' | 'winpc_shell' | 'generic'
   host: 'local' | 'serrano' | 'winpc'
   status: WorkerStatus
   startedAt?: string
   lastActivity?: string
   output?: string
+}
+
+export interface WorkerTypeOption {
+  id: string
+  label: string
+  host: 'serrano' | 'winpc' | 'local'
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -137,7 +158,104 @@ export interface ThemeConfig {
 
 // ── Right panel ───────────────────────────────────────────────────────────────
 
-export type RightPanelId = 'settings' | 'health' | 'workers' | null
+export type RightPanelId = 'settings' | 'health' | 'workers' | 'usage' | 'syncthing' | null
+
+// ── Permissions ───────────────────────────────────────────────────────────────
+
+export interface Permission {
+  id: string
+  conversationId: string
+  runId: string
+  kind: string
+  summary: string
+  detailsJson: string
+  status: 'pending' | 'resolved'
+  decision: string | null
+  note: string | null
+  createdAt: string
+  resolvedAt: string | null
+}
+
+// ── Usage ─────────────────────────────────────────────────────────────────────
+
+export type UsageProviderId = 'copilot' | 'claude' | 'codex' | 'openrouter'
+
+export interface UsageProviderSummary {
+  provider: UsageProviderId
+  label: string
+  unit: 'premium_requests' | 'calls' | 'usd'
+  used: number
+  limit: number | null
+  percent: number | null
+  status: string
+  wired: boolean
+  period: string
+  details: Record<string, unknown>
+}
+
+export interface SubscriptionHost {
+  host: string
+  status: 'ok' | 'degraded' | 'unavailable'
+  authenticated: boolean | null
+  account: string | null
+  subscriptionType: string | null
+  authMethod: string | null
+  version: string | null
+  detail: string | null
+  checkedAt: string
+}
+
+export interface SubscriptionProvider {
+  provider: 'codex' | 'claude'
+  label: string
+  aggregateStatus: 'ok' | 'degraded' | 'unavailable'
+  hosts: SubscriptionHost[]
+}
+
+// ── Syncthing ─────────────────────────────────────────────────────────────────
+
+export type SyncthingHost = 'local' | 'serrano' | 'winpc' | 'iphone' | string
+
+export interface SyncthingFolderStatus {
+  folderId: string
+  state: string | null
+  needItems: number | null
+  needBytes: number | null
+  errors: number | null
+  pullErrors: number | null
+  globalItems: number | null
+  localItems: number | null
+}
+
+export interface SyncthingConnection {
+  deviceId: string
+  connected: boolean
+  address: string | null
+  version: string | null
+  paused: boolean
+  at: string | null
+}
+
+export interface SyncthingDevice {
+  host: SyncthingHost
+  status: 'ok' | 'degraded' | 'unavailable' | 'unknown'
+  available: boolean
+  conflictCount: number | null
+  junkCount: number | null
+  timestamp: string | null
+  folders: SyncthingFolderStatus[]
+  connections: SyncthingConnection[]
+}
+
+export interface SyncthingConflict {
+  path: string
+  canonicalPath: string | null
+  folderId: string | null
+  devices: string[]
+  mtimes: Record<string, string>
+  reason: string | null
+  reviewDir: string | null
+}
 
 // ── Workers ──────────────────────────────────────────────────────────────────
 
@@ -150,11 +268,13 @@ export interface WorkerTerminalLine {
 
 export interface AppState {
   conversations: Conversation[]
+  folders: Folder[]
   activeConversationId: string
   contextMode: ContextMode
   contextFiles: ContextFile[]
   model: string
   defaultModel: string
+  modelOptions: string[]
   budgetUsed: number
   budgetTotal: number
   tools: Tool[]
@@ -167,11 +287,18 @@ export interface AppState {
   sensitiveUnlocked: boolean
   theme: ThemeName
   titleGeneration: boolean
+  copilotBudgetHardOverride: boolean
   systemContext: string
   shortTermContinuity: string
   healthEntries: HealthEntry[]
   directActions: DirectAction[]
   workers: Worker[]
+  workerTypeOptions: WorkerTypeOption[]
+  permissions: Permission[]
+  usageProviders: UsageProviderSummary[]
+  subscriptions: SubscriptionProvider[]
+  syncthingDevices: SyncthingDevice[]
+  syncthingConflicts: SyncthingConflict[]
   settingsTab: 'settings' | 'theme'
 }
 

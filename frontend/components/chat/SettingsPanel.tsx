@@ -68,6 +68,7 @@ type SettingsTabId = 'settings' | 'theme'
 interface SettingsPanelProps {
   model: string
   defaultModel: string
+  modelOptions: string[]
   budgetUsed: number
   budgetTotal: number
   contextMode: ContextMode
@@ -76,27 +77,23 @@ interface SettingsPanelProps {
   workers: Worker[]
   theme: ThemeName
   titleGeneration: boolean
+  copilotBudgetHardOverride: boolean
   systemContext: string
   shortTermContinuity: string
   activeTab: SettingsTabId
   onClose?: () => void
   onToggleTool: (id: string) => void
+  onSetToolApprovalPolicy: (toolName: string, policy: 'auto' | 'confirm') => void
   onChangeModel: (model: string) => void
   onChangeDefaultModel: (model: string) => void
+  onSetContextMode: (mode: ContextMode) => void
   onChangeTheme: (theme: ThemeName) => void
   onToggleTitleGeneration: () => void
+  onToggleCopilotHardOverride: () => void
   onChangeSystemContext: (v: string) => void
   onChangeShortTermContinuity: (v: string) => void
   onSetTab: (tab: SettingsTabId) => void
 }
-
-const MODEL_OPTIONS = [
-  'github_copilot/gpt-4.1',
-  'github_copilot/gpt-4o',
-  'github_copilot/claude-opus-4.5',
-  'openai/gpt-5-mini',
-  'anthropic/claude-opus-4.6',
-]
 
 const TABS: { id: SettingsTabId; label: string }[] = [
   { id: 'settings', label: 'Settings' },
@@ -106,11 +103,11 @@ const TABS: { id: SettingsTabId; label: string }[] = [
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function SettingsPanel({
-  model, defaultModel, budgetUsed, budgetTotal, contextMode, contextFiles,
-  tools, theme, titleGeneration, systemContext, shortTermContinuity,
-  activeTab, onClose, onToggleTool, onChangeModel, onChangeDefaultModel,
-  onChangeTheme, onToggleTitleGeneration, onChangeSystemContext,
-  onChangeShortTermContinuity, onSetTab,
+  model, defaultModel, modelOptions, budgetUsed, budgetTotal, contextMode, contextFiles,
+  tools, theme, titleGeneration, copilotBudgetHardOverride, systemContext, shortTermContinuity,
+  activeTab, onClose, onToggleTool, onSetToolApprovalPolicy, onChangeModel, onChangeDefaultModel,
+  onSetContextMode, onChangeTheme, onToggleTitleGeneration, onToggleCopilotHardOverride,
+  onChangeSystemContext, onChangeShortTermContinuity, onSetTab,
 }: SettingsPanelProps) {
   const [confirmPending, setConfirmPending] = useState<null | {
     title: string; description: string; onConfirm: () => void
@@ -171,7 +168,7 @@ export function SettingsPanel({
                       className="w-full bg-[#111111] border border-white/[0.08] rounded-md px-2.5 py-1.5 text-xs font-mono outline-none hover:border-white/[0.14] transition-colors"
                       style={{ color: 'var(--accent-green)' }}
                     >
-                      {MODEL_OPTIONS.map((m) => (
+                      {modelOptions.map((m) => (
                         <option key={m} value={m} className="bg-[#111111] text-[#cccccc]">{m}</option>
                       ))}
                     </select>
@@ -183,7 +180,7 @@ export function SettingsPanel({
                       onChange={(e) => onChangeDefaultModel(e.target.value)}
                       className="w-full bg-[#111111] border border-white/[0.08] rounded-md px-2.5 py-1.5 text-xs font-mono text-[#888888] outline-none hover:border-white/[0.14] transition-colors"
                     >
-                      {MODEL_OPTIONS.map((m) => (
+                      {modelOptions.map((m) => (
                         <option key={m} value={m} className="bg-[#111111] text-[#cccccc]">{m}</option>
                       ))}
                     </select>
@@ -194,9 +191,17 @@ export function SettingsPanel({
 
               <AccordionSection title="Context">
                 <div className="flex flex-col gap-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-sans text-[#888888]">Mode</span>
-                    <span className="text-xs font-mono" style={{ color: 'var(--accent-blue)' }}>{contextMode}</span>
+                    <select
+                      value={contextMode}
+                      onChange={(e) => onSetContextMode(e.target.value as ContextMode)}
+                      className="bg-[#111111] border border-white/[0.08] rounded-md px-2 py-1 text-[11px] font-mono outline-none hover:border-white/[0.14] transition-colors"
+                      style={{ color: 'var(--accent-blue)' }}
+                    >
+                      <option value="Normal" className="bg-[#111111] text-[#cccccc]">Normal</option>
+                      <option value="Blank-slate" className="bg-[#111111] text-[#cccccc]">Blank-slate</option>
+                    </select>
                   </div>
                   {contextFiles.length > 0 && (
                     <div>
@@ -226,29 +231,63 @@ export function SettingsPanel({
                         <span className="text-xs font-mono text-[#cccccc] truncate">{tool.name}</span>
                         <span className="text-[10px] font-sans text-[#555555] leading-tight">{tool.description}</span>
                       </div>
-                      <MiniToggle
-                        enabled={tool.enabled}
-                        label={`${tool.enabled ? 'Disable' : 'Enable'} ${tool.name}`}
-                        onToggle={() => {
-                          if (tool.enabled) {
-                            requireConfirm('Disable tool', `Disable "${tool.name}"? This creates an audit event.`, () => onToggleTool(tool.id))
-                          } else {
-                            onToggleTool(tool.id)
-                          }
-                        }}
-                      />
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <select
+                          value={tool.approvalPolicy ?? 'auto'}
+                          onChange={(e) => onSetToolApprovalPolicy(tool.name, e.target.value as 'auto' | 'confirm')}
+                          className="bg-[#111111] border border-white/[0.08] rounded-md px-1.5 py-0.5 text-[10px] font-mono text-[#888888] outline-none hover:border-white/[0.14] transition-colors"
+                          aria-label={`Approval policy for ${tool.name}`}
+                        >
+                          <option value="auto" className="bg-[#111111] text-[#cccccc]">auto</option>
+                          <option value="confirm" className="bg-[#111111] text-[#cccccc]">confirm</option>
+                        </select>
+                        <MiniToggle
+                          enabled={tool.enabled}
+                          label={`${tool.enabled ? 'Disable' : 'Enable'} ${tool.name}`}
+                          onToggle={() => {
+                            if (tool.enabled) {
+                              requireConfirm('Disable tool', `Disable "${tool.name}"? This creates an audit event.`, () => onToggleTool(tool.id))
+                            } else {
+                              onToggleTool(tool.id)
+                            }
+                          }}
+                        />
+                      </div>
                     </li>
                   ))}
                 </ul>
               </AccordionSection>
 
               <AccordionSection title="Behavior" defaultOpen={false}>
-                <div className="flex items-center justify-between">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-xs font-mono text-[#cccccc]">Title generation</span>
-                    <span className="text-[10px] font-sans text-[#555555]">Auto-generate conversation titles</span>
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs font-mono text-[#cccccc]">Title generation</span>
+                      <span className="text-[10px] font-sans text-[#555555]">Auto-generate conversation titles</span>
+                    </div>
+                    <MiniToggle enabled={titleGeneration} label="Toggle title generation" onToggle={onToggleTitleGeneration} />
                   </div>
-                  <MiniToggle enabled={titleGeneration} label="Toggle title generation" onToggle={onToggleTitleGeneration} />
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs font-mono text-[#cccccc]">Copilot budget hard override</span>
+                      <span className="text-[10px] font-sans text-[#555555]">Allow runs past the monthly hard cap</span>
+                    </div>
+                    <MiniToggle
+                      enabled={copilotBudgetHardOverride}
+                      label="Toggle Copilot budget hard override"
+                      onToggle={() => {
+                        if (!copilotBudgetHardOverride) {
+                          requireConfirm(
+                            'Enable hard-cap override',
+                            'Allow Copilot requests past the monthly hard cap? This creates an audit event.',
+                            onToggleCopilotHardOverride,
+                          )
+                        } else {
+                          onToggleCopilotHardOverride()
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
               </AccordionSection>
 

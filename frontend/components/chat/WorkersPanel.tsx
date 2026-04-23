@@ -6,16 +6,13 @@ import {
   Maximize2, Minimize2, ChevronDown, ChevronRight, PlugZap, Cpu,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { Worker, WorkerStatus } from '@/lib/types'
+import type { Worker, WorkerStatus, WorkerTypeOption } from '@/lib/types'
 
 const WORKER_ICON: Record<Worker['type'], React.ReactNode> = {
-  codex:    <Cpu size={12} />,
   opencode: <Cpu size={12} />,
   claude:   <Cpu size={12} />,
-  goose:    <Cpu size={12} />,
-  gemini:   <Cpu size={12} />,
-  gh_cli:   <Globe size={12} />,
   tmux:     <Terminal size={12} />,
+  winpc_shell: <Globe size={12} />,
   generic:  <Terminal size={12} />,
 }
 
@@ -26,23 +23,11 @@ const STATUS_COLOR: Record<WorkerStatus, string> = {
   capturing: 'bg-[var(--accent-blue)]',
 }
 
-const WORKER_PRESETS: { type: Worker['type']; label: string }[] = [
-  { type: 'codex',   label: 'Codex' },
-  { type: 'claude',  label: 'Claude Code' },
-  { type: 'goose',   label: 'Goose' },
-  { type: 'gemini',  label: 'Gemini' },
-  { type: 'gh_cli',  label: 'GitHub CLI' },
-  { type: 'tmux',    label: 'tmux (local)' },
-]
-
 const DEMO_OUTPUT: Record<Worker['type'], string[]> = {
-  codex:    ['$ codex --model gpt-4.1', '> Loading context...', '> Ready.'],
   opencode: ['$ opencode', '> Starting session...'],
   claude:   ['$ claude', '> Authenticating...', '> Session started.'],
-  goose:    ['$ goose session', '> Initialising...', '> Provider: openai'],
-  gemini:   ['$ gemini-cli', '> Connected to Gemini 2.5 Pro'],
-  gh_cli:   ['$ gh pr list', '#42  fix: memory leak       open', '#41  feat: sse support      merged'],
   tmux:     ['$ tmux new -s delamain', '[delamain] 0:bash*'],
+  winpc_shell: ['PS C:\\Users\\Daniel> wsl.exe -e tmux ls', 'dw-worker_123 (created Wed)'],
   generic:  ['$ /bin/bash'],
 }
 
@@ -283,11 +268,12 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill }: WorkerCa
 
 interface WorkersPanelProps {
   workers: Worker[]
+  workerTypeOptions: WorkerTypeOption[]
   onAction: (workerId: string, action: 'capture' | 'summarize' | 'stop' | 'kill') => void
-  onStartWorker: (type: Worker['type']) => void
+  onStartWorker: (workerTypeId: string) => void
 }
 
-export function WorkersPanel({ workers, onAction, onStartWorker }: WorkersPanelProps) {
+export function WorkersPanel({ workers, workerTypeOptions, onAction, onStartWorker }: WorkersPanelProps) {
   const [showPresets, setShowPresets] = useState(false)
   const presetRef = useRef<HTMLDivElement>(null)
 
@@ -315,14 +301,16 @@ export function WorkersPanel({ workers, onAction, onStartWorker }: WorkersPanelP
         </button>
         {showPresets && (
           <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-[#111111] border border-white/[0.1] rounded-xl overflow-hidden shadow-2xl">
-            {WORKER_PRESETS.map((p) => (
+            {workerTypeOptions.map((p) => (
               <button
-                key={p.type}
-                onClick={() => { onStartWorker(p.type); setShowPresets(false) }}
+                key={p.id}
+                onClick={() => { onStartWorker(p.id); setShowPresets(false) }}
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-mono text-[#888888] hover:bg-white/[0.04] hover:text-white transition-colors"
               >
-                <span style={{ color: 'var(--accent-blue)' }}>{WORKER_ICON[p.type]}</span>
-                {p.label}
+                <span style={{ color: 'var(--accent-blue)' }}>
+                  {p.id === 'opencode' ? WORKER_ICON.opencode : p.id === 'claude_code' ? WORKER_ICON.claude : p.id === 'winpc_shell' ? WORKER_ICON.winpc_shell : WORKER_ICON.tmux}
+                </span>
+                {p.label} <span className="text-[10px] text-[#444444]">({p.host})</span>
               </button>
             ))}
           </div>

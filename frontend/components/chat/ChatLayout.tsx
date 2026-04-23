@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Menu, Settings, Activity, Cpu, Pencil, X } from 'lucide-react'
+import { Menu, Settings, Activity, Cpu, Pencil, X, DollarSign } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from './Sidebar'
 import { ChatPane } from './ChatPane'
@@ -10,14 +10,28 @@ import { InputBar } from './InputBar'
 import { SettingsPanel } from './SettingsPanel'
 import { HealthPanel } from './HealthPanel'
 import { WorkersPanel } from './WorkersPanel'
+import { UsagePanel } from './UsagePanel'
+import { SyncthingPanel } from './SyncthingPanel'
 import { ContextEditor } from './ContextEditor'
 import { ModelBadge } from './ModelBadge'
 import { RunStatusPill } from './RunStatusPill'
+import { RunControls } from './RunControls'
+import { PermissionModal } from './PermissionModal'
 import { BackendStatusBanner } from './BackendStatusBanner'
 import { SensitiveLockBadge } from './SensitiveLockBadge'
 import { AuditTrail } from './AuditTrail'
 import { useDelamainBackend } from '@/hooks/useDelamainBackend'
+import { api } from '@/lib/api'
 import type { RightPanelId, ContextFile } from '@/lib/types'
+
+type ContextFileId = 'system-context' | 'short-term-continuity' | null
+
+function detectContextFileId(file: ContextFile): ContextFileId {
+  const path = file.path.toLowerCase()
+  if (path.includes('system-context')) return 'system-context'
+  if (path.includes('short-term-continuity') || path.includes('short_term_continuity')) return 'short-term-continuity'
+  return null
+}
 
 // ── Drag-resize hook ──────────────────────────────────────────────────────────
 
@@ -103,6 +117,7 @@ export function ChatLayout() {
     startEditTitle,
     commitTitle,
     setState,
+    patchState,
     openPanel,
     closePanel,
     toggleLeft,
@@ -110,6 +125,7 @@ export function ChatLayout() {
     handleNewConversation,
     handleSend,
     handleToggleTool,
+    handleSetToolApprovalPolicy,
     handleUnlockSensitive,
     handleLockSensitive,
     handleRunDirectAction,
@@ -117,7 +133,41 @@ export function ChatLayout() {
     handleStartWorker,
     handleChangeTheme,
     handleDismissFile,
+    handleRefreshUsage,
+    handleRefreshSyncthing,
+    handleResolveSyncthingConflict,
+    handleChangeModel,
+    handleChangeDefaultModel,
+    handleSetContextMode,
+    handleToggleTitleGeneration,
+    handleToggleCopilotHardOverride,
+    handleChangeSystemContext,
+    handleChangeShortTermContinuity,
+    handleCreateFolder,
+    handleRenameFolder,
+    handleMoveFolder,
+    handleDeleteFolder,
+    handleMoveConversation,
+    handleDeleteConversation,
+    handleResolvePermission,
+    handleRetryRun,
+    handleCancelRun,
   } = useDelamainBackend()
+
+  const handleRenameConversation = useCallback(
+    (conversationId: string, title: string) => {
+      setState((s) => ({
+        ...s,
+        conversations: s.conversations.map((c) =>
+          c.id === conversationId ? { ...c, title } : c
+        ),
+      }))
+      api.patchConversation(conversationId, { title }).catch(() => {
+        /* ignore */
+      })
+    },
+    [setState]
+  )
 
   const [contextEditFile, setContextEditFile] = useState<ContextFile | null>(null)
   const [contextContents, setContextContents] = useState<Record<string, string>>({})
@@ -136,20 +186,80 @@ export function ChatLayout() {
     }
   }, [state.theme])
 
+  // Load system-context + short-term-continuity once the backend is connected
+  const loadedCtxRef = useRef(false)
+  useEffect(() => {
+    if (state.connection !== 'connected') return
+    if (loadedCtxRef.current) return
+    loadedCtxRef.current = true
+    let cancelled = false
+    Promise.all([
+      api.getContextFile('system-context').catch(() => null),
+      api.getContextFile('short-term-continuity').catch(() => null),
+    ]).then(([sys, cont]) => {
+      if (cancelled) return
+      if (sys) patchState('systemContext', sys.content)
+      if (cont) patchState('shortTermContinuity', cont.content)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [state.connection, patchState])
+
   const handleClickFile = useCallback((file: ContextFile) => {
     setContextEditFile(file)
-    if (!contextContents[file.id]) {
-      setContextContents((prev) => ({
-        ...prev,
-        [file.id]: `# ${file.name}\n\n_Loaded as context. Edit and save to update._\n\nPath: \`${file.path}\`\n`,
-      }))
+    const detected = detectContextFileId(file)
+    if (detected === 'system-context') {
+      setContextContents((prev) => ({ ...prev, [file.id]: state.systemContext }))
+      return
     }
-  }, [contextContents])
+    if (detected === 'short-term-continuity') {
+      setContextContents((prev) => ({ ...prev, [file.id]: state.shortTermContinuity }))
+      return
+    }
+    if (!contextContents[file.id]) {
+      const basename = file.path.split('/').pop()?.replace(/\.md$/, '') ?? ''
+      if (basename) {
+        api
+          .getContextFile(basename)
+          .then((resp) => {
+            setContextContents((prev) => ({ ...prev, [file.id]: resp.content }))
+          })
+          .catch(() => {
+            setContextContents((prev) => ({
+              ...prev,
+              [file.id]: `# ${file.name}\n\n_Unable to load content from backend._\n\nPath: \`${file.path}\`\n`,
+            }))
+          })
+      }
+    }
+  }, [contextContents, state.systemContext, state.shortTermContinuity])
 
-  const handleSaveContextFile = useCallback((fileId: string, content: string) => {
-    setContextContents((prev) => ({ ...prev, [fileId]: content }))
-    setContextEditFile(null)
-  }, [])
+  const handleSaveContextFile = useCallback(
+    (fileId: string, content: string) => {
+      setContextContents((prev) => ({ ...prev, [fileId]: content }))
+      const file = contextEditFile
+      if (file) {
+        const detected = detectContextFileId(file)
+        if (detected === 'system-context') {
+          handleChangeSystemContext(content)
+        } else if (detected === 'short-term-continuity') {
+          handleChangeShortTermContinuity(content)
+        } else {
+          const basename = file.path.split('/').pop()?.replace(/\.md$/, '') ?? ''
+          if (basename) {
+            api
+              .patchContextFile(basename, content, state.activeConversationId || undefined)
+              .catch(() => {
+                /* ignore */
+              })
+          }
+        }
+      }
+      setContextEditFile(null)
+    },
+    [contextEditFile, handleChangeSystemContext, handleChangeShortTermContinuity, state.activeConversationId],
+  )
 
   const toggleSensitive = useCallback(() => {
     if (state.sensitiveUnlocked) handleLockSensitive()
@@ -161,6 +271,10 @@ export function ChatLayout() {
   ).length
 
   const workerRunningCount = state.workers.filter((w) => w.status === 'running').length
+
+  const usageAlertCount =
+    state.usageProviders.filter((p) => p.wired && (p.percent ?? 0) >= 90).length +
+    state.subscriptions.filter((s) => s.aggregateStatus !== 'ok').length
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-black">
@@ -178,10 +292,18 @@ export function ChatLayout() {
       >
         <Sidebar
           conversations={state.conversations}
+          folders={state.folders}
           activeId={state.activeConversationId}
           onSelect={handleSelectConversation}
           onNew={handleNewConversation}
           onClose={toggleLeft}
+          onCreateFolder={handleCreateFolder}
+          onRenameFolder={handleRenameFolder}
+          onMoveFolder={handleMoveFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onMoveConversation={handleMoveConversation}
+          onDeleteConversation={handleDeleteConversation}
+          onRenameConversation={handleRenameConversation}
         />
         <DragHandle onMouseDown={sidebarResize.onMouseDown} side="right" />
       </div>
@@ -194,10 +316,18 @@ export function ChatLayout() {
       >
         <Sidebar
           conversations={state.conversations}
+          folders={state.folders}
           activeId={state.activeConversationId}
           onSelect={handleSelectConversation}
           onNew={handleNewConversation}
           onClose={toggleLeft}
+          onCreateFolder={handleCreateFolder}
+          onRenameFolder={handleRenameFolder}
+          onMoveFolder={handleMoveFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onMoveConversation={handleMoveConversation}
+          onDeleteConversation={handleDeleteConversation}
+          onRenameConversation={handleRenameConversation}
         />
       </div>
 
@@ -237,6 +367,12 @@ export function ChatLayout() {
             )}
             <ModelBadge model={state.model} />
             <RunStatusPill status={activeConversation?.runStatus} />
+            <RunControls
+              status={activeConversation?.runStatus}
+              messages={activeConversation?.messages ?? []}
+              onRetry={handleRetryRun}
+              onCancel={handleCancelRun}
+            />
             <SensitiveLockBadge unlocked={state.sensitiveUnlocked} onToggle={toggleSensitive} />
           </div>
 
@@ -251,6 +387,23 @@ export function ChatLayout() {
             >
               <Activity size={14} />
               {degradedCount > 0 && (
+                <span
+                  className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                  style={{ backgroundColor: 'var(--accent-pink)' }}
+                />
+              )}
+            </button>
+
+            <button
+              onClick={() => openPanel('usage')}
+              className={cn('relative text-[#555555] hover:text-white transition-colors p-1.5 rounded')}
+              style={state.rightPanel === 'usage' ? { color: 'var(--accent-blue)' } : {}}
+              aria-label="Usage panel"
+              aria-pressed={state.rightPanel === 'usage'}
+              title="Usage"
+            >
+              <DollarSign size={14} />
+              {usageAlertCount > 0 && (
                 <span
                   className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
                   style={{ backgroundColor: 'var(--accent-pink)' }}
@@ -325,7 +478,53 @@ export function ChatLayout() {
             <DragHandle onMouseDown={rightPanelResize.onMouseDown} side="left" />
             <PanelHeader title="Health" onClose={closePanel} />
             <div className="flex-1 overflow-y-auto">
-              <HealthPanel entries={state.healthEntries} />
+              <HealthPanel
+                entries={state.healthEntries}
+                syncthingDevices={state.syncthingDevices}
+                syncthingConflictCount={state.syncthingConflicts.length}
+                onOpenSyncthing={() => openPanel('syncthing')}
+              />
+            </div>
+          </aside>
+        </>
+      )}
+
+      {state.rightPanel === 'syncthing' && (
+        <>
+          <div className="fixed inset-0 z-20 bg-black/60 xl:hidden" onClick={closePanel} aria-hidden="true" />
+          <aside
+            className="relative flex-shrink-0 flex flex-col h-full bg-[#080808] border-l border-white/[0.06] z-30"
+            style={{ width: rightPanelResize.width }}
+          >
+            <DragHandle onMouseDown={rightPanelResize.onMouseDown} side="left" />
+            <PanelHeader title="Syncthing" onClose={closePanel} />
+            <div className="flex-1 overflow-y-auto">
+              <SyncthingPanel
+                devices={state.syncthingDevices}
+                conflicts={state.syncthingConflicts}
+                onRefresh={handleRefreshSyncthing}
+                onResolveConflict={handleResolveSyncthingConflict}
+              />
+            </div>
+          </aside>
+        </>
+      )}
+
+      {state.rightPanel === 'usage' && (
+        <>
+          <div className="fixed inset-0 z-20 bg-black/60 xl:hidden" onClick={closePanel} aria-hidden="true" />
+          <aside
+            className="relative flex-shrink-0 flex flex-col h-full bg-[#080808] border-l border-white/[0.06] z-30"
+            style={{ width: rightPanelResize.width }}
+          >
+            <DragHandle onMouseDown={rightPanelResize.onMouseDown} side="left" />
+            <PanelHeader title="Usage" onClose={closePanel} />
+            <div className="flex-1 overflow-y-auto">
+              <UsagePanel
+                usageProviders={state.usageProviders}
+                subscriptions={state.subscriptions}
+                onRefresh={handleRefreshUsage}
+              />
             </div>
           </aside>
         </>
@@ -343,6 +542,7 @@ export function ChatLayout() {
             <div className="flex-1 overflow-y-auto">
               <WorkersPanel
                 workers={state.workers}
+                workerTypeOptions={state.workerTypeOptions}
                 onAction={handleWorkerAction}
                 onStartWorker={handleStartWorker}
               />
@@ -362,6 +562,7 @@ export function ChatLayout() {
             <SettingsPanel
               model={state.model}
               defaultModel={state.defaultModel}
+              modelOptions={state.modelOptions}
               budgetUsed={state.budgetUsed}
               budgetTotal={state.budgetTotal}
               contextMode={state.contextMode}
@@ -370,17 +571,21 @@ export function ChatLayout() {
               workers={state.workers}
               theme={state.theme}
               titleGeneration={state.titleGeneration}
+              copilotBudgetHardOverride={state.copilotBudgetHardOverride}
               systemContext={state.systemContext}
               shortTermContinuity={state.shortTermContinuity}
               activeTab={state.settingsTab}
               onClose={closePanel}
               onToggleTool={handleToggleTool}
-              onChangeModel={(m) => setState((s) => ({ ...s, model: m }))}
-              onChangeDefaultModel={(m) => setState((s) => ({ ...s, defaultModel: m }))}
+              onSetToolApprovalPolicy={handleSetToolApprovalPolicy}
+              onChangeModel={handleChangeModel}
+              onChangeDefaultModel={handleChangeDefaultModel}
+              onSetContextMode={handleSetContextMode}
               onChangeTheme={handleChangeTheme}
-              onToggleTitleGeneration={() => setState((s) => ({ ...s, titleGeneration: !s.titleGeneration }))}
-              onChangeSystemContext={(v) => setState((s) => ({ ...s, systemContext: v }))}
-              onChangeShortTermContinuity={(v) => setState((s) => ({ ...s, shortTermContinuity: v }))}
+              onToggleTitleGeneration={handleToggleTitleGeneration}
+              onToggleCopilotHardOverride={handleToggleCopilotHardOverride}
+              onChangeSystemContext={handleChangeSystemContext}
+              onChangeShortTermContinuity={handleChangeShortTermContinuity}
               onSetTab={(tab) => setState((s) => ({ ...s, settingsTab: tab }))}
             />
           </aside>
@@ -395,6 +600,12 @@ export function ChatLayout() {
           onClose={() => setContextEditFile(null)}
         />
       )}
+
+      <PermissionModal
+        permissions={state.permissions}
+        onResolve={handleResolvePermission}
+        onRememberPolicy={handleSetToolApprovalPolicy}
+      />
     </div>
   )
 }
