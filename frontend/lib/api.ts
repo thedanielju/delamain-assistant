@@ -256,7 +256,7 @@ export const api = {
       conversation_id?: string | null
     }
   ) {
-    return request<{ tool: BackendTool }>(`/settings/tools/${encodeURIComponent(name)}`, {
+    return request<BackendTool>(`/settings/tools/${encodeURIComponent(name)}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
     })

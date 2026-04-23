@@ -24,6 +24,7 @@ const SYNCTHING_HOSTS: Array<SyncthingDevice['host']> = ['local', 'serrano', 'wi
 const SYNC_STATUS_DOT: Record<SyncthingDevice['status'], string> = {
   ok: 'bg-[var(--accent-green)]',
   degraded: 'bg-[var(--accent-blue)]',
+  probe_only: 'bg-[var(--accent-blue)]',
   unavailable: 'bg-[var(--accent-pink)]',
   unknown: 'bg-[#444444]',
 }
@@ -50,21 +51,19 @@ function SyncthingSummaryCard({
         <div className="flex items-center gap-3">
           {SYNCTHING_HOSTS.map((host) => {
             const dev = byHost.get(host)
-            const isStub = host === 'iphone' && !dev
             const status: SyncthingDevice['status'] = dev?.status ?? 'unknown'
             return (
               <span key={host} className="flex items-center gap-1">
                 <span
                   className={cn(
                     'w-1.5 h-1.5 rounded-full inline-block',
-                    SYNC_STATUS_DOT[status],
-                    isStub && 'bg-[#2a2a2a]'
+                    SYNC_STATUS_DOT[status]
                   )}
                 />
                 <span
                   className={cn(
                     'text-[10px] font-mono',
-                    isStub ? 'text-[#3a3a3a]' : 'text-[#888888]'
+                    dev ? 'text-[#888888]' : 'text-[#3a3a3a]'
                   )}
                 >
                   {host}
@@ -74,13 +73,12 @@ function SyncthingSummaryCard({
           })}
         </div>
         <p className="text-[9px] font-mono text-[#3a3a3a]">
-          {!byHost.has('iphone') && 'Awaiting iOS backend wiring'}
-          {!byHost.has('iphone') && conflictCount > 0 && ' · '}
           {conflictCount > 0 && (
             <span className="text-[var(--accent-pink)]">
               {conflictCount} conflict{conflictCount === 1 ? '' : 's'}
             </span>
           )}
+          {conflictCount === 0 && 'Syncthing status'}
         </p>
       </div>
       <ChevronRight size={11} className="text-[#444444] flex-shrink-0" />
@@ -196,21 +194,6 @@ export function HealthPanel({
         ))}
       </ul>
 
-      {/* Future endpoint list */}
-      <div className="mt-1 pt-3 border-t border-white/[0.04]">
-        <p className="text-[9px] font-mono text-[#3a3a3a] uppercase tracking-wider mb-1.5">Anticipated endpoints</p>
-        <ul className="flex flex-col gap-1">
-          {[
-            'GET /api/health',
-            'GET /api/health/syncthing',
-            'GET /api/health/hosts',
-            'GET /api/health/copilot-budget',
-            'GET /api/health/models',
-          ].map((ep) => (
-            <li key={ep} className="text-[10px] font-mono text-[#3a3a3a]">{ep}</li>
-          ))}
-        </ul>
-      </div>
     </div>
   )
 }

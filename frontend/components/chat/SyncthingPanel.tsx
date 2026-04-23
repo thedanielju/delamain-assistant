@@ -26,6 +26,7 @@ type ResolveAction = 'keep_canonical' | 'keep_conflict' | 'keep_both' | 'stage_r
 const STATUS_DOT: Record<SyncthingDevice['status'], string> = {
   ok: 'bg-[var(--accent-green)]',
   degraded: 'bg-[var(--accent-blue)]',
+  probe_only: 'bg-[var(--accent-blue)]',
   unavailable: 'bg-[var(--accent-pink)]',
   unknown: 'bg-[#444444]',
 }
@@ -33,6 +34,7 @@ const STATUS_DOT: Record<SyncthingDevice['status'], string> = {
 const STATUS_TEXT: Record<SyncthingDevice['status'], string> = {
   ok: 'text-[var(--accent-green)]',
   degraded: 'text-[var(--accent-blue)]',
+  probe_only: 'text-[var(--accent-blue)]',
   unavailable: 'text-[var(--accent-pink)]',
   unknown: 'text-[#555555]',
 }
@@ -136,7 +138,7 @@ function DeviceCard({ device }: { device: SyncthingDevice }) {
 
       {expanded && (
         <div className="border-t border-white/[0.05] px-3 py-2.5 flex flex-col gap-2.5">
-          {!device.available && (
+          {device.available === false && device.status !== 'probe_only' && (
             <p className="text-[10px] font-mono text-[var(--accent-pink)]">
               Device unavailable
             </p>

@@ -178,7 +178,7 @@ export interface Permission {
 
 // ── Usage ─────────────────────────────────────────────────────────────────────
 
-export type UsageProviderId = 'copilot' | 'claude' | 'codex' | 'openrouter'
+export type UsageProviderId = 'copilot' | 'claude' | 'codex' | 'gemini' | 'openrouter'
 
 export interface UsageProviderSummary {
   provider: UsageProviderId
@@ -206,7 +206,7 @@ export interface SubscriptionHost {
 }
 
 export interface SubscriptionProvider {
-  provider: 'codex' | 'claude'
+  provider: 'codex' | 'claude' | 'gemini'
   label: string
   aggregateStatus: 'ok' | 'degraded' | 'unavailable'
   hosts: SubscriptionHost[]
@@ -238,8 +238,8 @@ export interface SyncthingConnection {
 
 export interface SyncthingDevice {
   host: SyncthingHost
-  status: 'ok' | 'degraded' | 'unavailable' | 'unknown'
-  available: boolean
+  status: 'ok' | 'degraded' | 'unavailable' | 'unknown' | 'probe_only'
+  available: boolean | null
   conflictCount: number | null
   junkCount: number | null
   timestamp: string | null

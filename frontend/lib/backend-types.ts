@@ -73,6 +73,8 @@ export interface BackendCopilotBudget {
   soft_threshold_percent: number
   hard_threshold_percent: number
   status: string
+  hard_override_enabled?: boolean
+  enforced?: boolean
 }
 
 export interface BackendHealth {
@@ -86,7 +88,7 @@ export interface BackendHealth {
     model_calls_enabled: boolean
   }
   helpers: Record<string, { path: string; exists: boolean; executable: boolean }>
-  copilot_budget?: BackendCopilotBudget
+  budget?: BackendCopilotBudget
 }
 
 export interface BackendSettings {
@@ -210,7 +212,7 @@ export interface BackendWorker {
 
 // ── Usage ────────────────────────────────────────────────────────────────────
 
-export type BackendUsageProviderId = 'copilot' | 'claude' | 'codex' | 'openrouter'
+export type BackendUsageProviderId = 'copilot' | 'claude' | 'codex' | 'gemini' | 'openrouter'
 
 export interface BackendUsageProvider {
   provider: BackendUsageProviderId
@@ -243,7 +245,7 @@ export interface BackendSubscriptionHost {
 }
 
 export interface BackendSubscriptionProvider {
-  provider: 'codex' | 'claude'
+  provider: 'codex' | 'claude' | 'gemini'
   label: string
   billing_kind: 'subscription_auth'
   aggregate_status: 'ok' | 'degraded' | 'unavailable'
@@ -253,10 +255,7 @@ export interface BackendSubscriptionProvider {
 export interface BackendSubscriptionSummary {
   generated_at: string
   ttl_seconds: number
-  providers: {
-    codex: BackendSubscriptionProvider
-    claude: BackendSubscriptionProvider
-  }
+  providers: Partial<Record<'codex' | 'claude' | 'gemini', BackendSubscriptionProvider>>
 }
 
 export interface BackendUsageResponse {
@@ -290,9 +289,9 @@ export interface BackendSyncthingConnection {
 
 export interface BackendSyncthingDevice {
   host: string
-  status: 'ok' | 'degraded' | 'unavailable' | 'unknown'
+  status: 'ok' | 'degraded' | 'unavailable' | 'unknown' | 'probe_only'
   timestamp: string | null
-  syncthing_available: boolean
+  syncthing_available: boolean | null
   conflict_count: number | null
   junk_count: number | null
   folders: BackendSyncthingFolder[]

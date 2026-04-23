@@ -259,10 +259,11 @@ export function toHealthEntriesFromHealth(health: {
     })
   }
   if (health.budget) {
+    const status = health.budget.status
     entries.push({
       id: 'copilot-budget',
       label: 'Copilot Budget',
-      status: health.budget.status === 'hard' ? 'error' : health.budget.status === 'soft' ? 'degraded' : 'ok',
+      status: status === 'hard_limit' ? 'error' : status === 'soft_limit' ? 'degraded' : 'ok',
       detail: `${health.budget.used_premium_requests} / ${health.budget.monthly_premium_requests} (${health.budget.percent_used}%)`,
       lastChecked: 'just now',
     })

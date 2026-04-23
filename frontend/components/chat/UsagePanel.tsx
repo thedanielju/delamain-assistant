@@ -168,23 +168,6 @@ function SubscriptionCard({ sub }: { sub: SubscriptionProvider }) {
   )
 }
 
-function GeminiStubCard() {
-  return (
-    <div className="rounded-xl border border-dashed border-white/[0.08] bg-[#0a0a0a] px-3 py-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-[#444444]" />
-          <span className="text-xs font-mono text-[#888888] truncate">Gemini</span>
-        </div>
-        <span className="text-[10px] font-mono text-[#555555] flex-shrink-0">stub</span>
-      </div>
-      <p className="mt-1.5 text-[10px] font-sans text-[#555555] leading-tight">
-        Awaiting backend wiring
-      </p>
-    </div>
-  )
-}
-
 // ── section ──────────────────────────────────────────────────────────────────
 
 function SectionHeader({ label }: { label: string }) {
@@ -224,8 +207,12 @@ export function UsagePanel({ usageProviders, subscriptions, onRefresh }: UsagePa
   const claudeUsage = byId('claude')
   const codexUsage = byId('codex')
 
-  const codexSub = subscriptions.find((s) => s.provider === 'codex')
-  const claudeSub = subscriptions.find((s) => s.provider === 'claude')
+  const subscriptionOrder = ['codex', 'claude', 'gemini']
+  const sortedSubscriptions = [...subscriptions].sort((a, b) => {
+    const ai = subscriptionOrder.indexOf(a.provider)
+    const bi = subscriptionOrder.indexOf(b.provider)
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi) || a.label.localeCompare(b.label)
+  })
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -262,9 +249,12 @@ export function UsagePanel({ usageProviders, subscriptions, onRefresh }: UsagePa
         <SectionHeader label="Subscriptions" />
         {copilot && <UsageProviderCard provider={copilot} />}
         {openrouter && <UsageProviderCard provider={openrouter} />}
-        {codexSub && <SubscriptionCard sub={codexSub} />}
-        {claudeSub && <SubscriptionCard sub={claudeSub} />}
-        <GeminiStubCard />
+        {sortedSubscriptions.map((sub) => (
+          <SubscriptionCard key={sub.provider} sub={sub} />
+        ))}
+        {sortedSubscriptions.length === 0 && (
+          <p className="text-[10px] font-mono text-[#3a3a3a] px-1">No subscription probes</p>
+        )}
       </section>
 
       {/* API section */}

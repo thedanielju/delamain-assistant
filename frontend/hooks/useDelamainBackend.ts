@@ -201,10 +201,9 @@ export function useDelamainBackend() {
           ? usageResp.providers.map(toUIUsageProvider)
           : []
         const subscriptions: SubscriptionProvider[] = usageResp
-          ? [
-              toUISubscriptionProvider(usageResp.subscriptions.providers.codex),
-              toUISubscriptionProvider(usageResp.subscriptions.providers.claude),
-            ]
+          ? Object.values(usageResp.subscriptions.providers)
+              .filter(Boolean)
+              .map((provider) => toUISubscriptionProvider(provider))
           : []
         const syncthingDevices: SyncthingDevice[] = syncSummary
           ? syncSummary.devices.map(toUISyncthingDevice)
@@ -236,7 +235,7 @@ export function useDelamainBackend() {
           ].filter((value, index, arr): value is string => Boolean(value) && arr.indexOf(value) === index),
           budgetUsed: budgetResp.copilot_budget.used_premium_requests,
           budgetTotal: budgetResp.copilot_budget.monthly_premium_requests,
-          healthEntries: toHealthEntriesFromHealth({ ...health, budget: health.copilot_budget }),
+          healthEntries: toHealthEntriesFromHealth(health),
           tools: toolsResp.tools.map(toUITool),
           directActions: actionsResp.actions.map(toUIDirectAction),
           workers: workersResp.workers.map(toUIWorker),
@@ -1331,15 +1330,9 @@ export function useDelamainBackend() {
         setState((s) => ({
           ...s,
           usageProviders: usage.providers.map(toUIUsageProvider),
-          subscriptions: subs
-            ? [
-                toUISubscriptionProvider(subs.providers.codex),
-                toUISubscriptionProvider(subs.providers.claude),
-              ]
-            : [
-                toUISubscriptionProvider(usage.subscriptions.providers.codex),
-                toUISubscriptionProvider(usage.subscriptions.providers.claude),
-              ],
+          subscriptions: Object.values((subs ?? usage.subscriptions).providers)
+            .filter(Boolean)
+            .map((provider) => toUISubscriptionProvider(provider)),
         }))
       } catch {
         /* ignore */
