@@ -139,7 +139,7 @@ export function InputBar({
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim()
-    if (!trimmed && attachments.length === 0) return
+    if (!trimmed) return
     onSend(trimmed, attachments)
     setValue('')
     setAttachments([])
@@ -160,7 +160,7 @@ export function InputBar({
     setAttachments((prev) => prev.filter((a) => a.id !== id))
   }, [])
 
-  const canSend = value.trim().length > 0 || attachments.length > 0
+  const canSend = value.trim().length > 0
 
   return (
     <div

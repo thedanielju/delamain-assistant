@@ -46,7 +46,7 @@ import type {
   Worker,
 } from '@/lib/types'
 
-export type BackendConnection = 'probing' | 'connected' | 'offline' | 'mock'
+export type BackendConnection = 'probing' | 'connected' | 'offline' | 'auth_required' | 'mock'
 
 export interface AuditEntry {
   id: string
@@ -58,6 +58,7 @@ export interface AuditEntry {
 
 interface BackendState extends AppState {
   connection: BackendConnection
+  authRedirectUrl: string | null
   audit: AuditEntry[]
 }
 
@@ -110,6 +111,7 @@ export function useDelamainBackend() {
   const [state, setState] = useState<BackendState>({
     ...INITIAL_STATE,
     connection: MOCK_MODE ? 'mock' : 'probing',
+    authRedirectUrl: null,
     audit: [],
     conversations: MOCK_MODE ? INITIAL_STATE.conversations : [],
     activeConversationId: MOCK_MODE ? INITIAL_STATE.activeConversationId : '',
@@ -121,6 +123,20 @@ export function useDelamainBackend() {
   const activeConversationId = state.activeConversationId
   const connected = state.connection === 'connected'
 
+  const handleBackendError = useCallback((err: unknown) => {
+    if (!(err instanceof AuthRequiredError)) return false
+    if (err.redirectUrl && typeof window !== 'undefined') {
+      window.location.href = err.redirectUrl
+      return true
+    }
+    setState((s) => ({
+      ...s,
+      connection: 'auth_required',
+      authRedirectUrl: err.redirectUrl ?? null,
+    }))
+    return true
+  }, [])
+
   // ── Initial load ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (MOCK_MODE) return
@@ -130,8 +146,7 @@ export function useDelamainBackend() {
       try {
         await api.health()
       } catch (err) {
-        if (err instanceof AuthRequiredError && err.redirectUrl && typeof window !== 'undefined') {
-          window.location.href = err.redirectUrl
+        if (handleBackendError(err)) {
           return
         }
         if (!cancelled) {
@@ -147,36 +162,50 @@ export function useDelamainBackend() {
         const [
           health,
           conversations,
-          foldersResp,
           toolsResp,
           actionsResp,
-          ctx,
           settingsResp,
           modelsResp,
-          budgetResp,
-          workersResp,
-          workerTypesResp,
-          usageResp,
-          syncSummary,
-          syncConflicts,
         ] = await Promise.all([
           api.health(),
           api.listConversations(),
-          api.listFolders().catch(() => [] as never[]),
           api.getTools(),
           api.listActions(),
-          api.getContextCurrent('normal').catch(() => null),
           api.getSettings(),
           api.getModels(),
+        ])
+        const [
+          foldersResult,
+          ctxResult,
+          budgetResult,
+          workersResult,
+          workerTypesResult,
+          usageResult,
+          syncSummaryResult,
+          syncConflictsResult,
+        ] = await Promise.allSettled([
+          api.listFolders(),
+          api.getContextCurrent('normal'),
           api.getBudget(),
           api.listWorkers(),
           api.listWorkerTypes(),
-          api.getUsage().catch(() => null),
-          api.getSyncthingSummary().catch(() => null),
-          api.getSyncthingConflicts().catch(() => null),
+          api.getUsage(),
+          api.getSyncthingSummary(),
+          api.getSyncthingConflicts(),
         ])
 
         if (cancelled) return
+
+        const foldersResp = foldersResult.status === 'fulfilled' ? foldersResult.value : []
+        const ctx = ctxResult.status === 'fulfilled' ? ctxResult.value : null
+        const budgetResp = budgetResult.status === 'fulfilled' ? budgetResult.value : null
+        const workersResp = workersResult.status === 'fulfilled' ? workersResult.value : { workers: [] }
+        const workerTypesResp =
+          workerTypesResult.status === 'fulfilled' ? workerTypesResult.value : { types: [] }
+        const usageResp = usageResult.status === 'fulfilled' ? usageResult.value : null
+        const syncSummary = syncSummaryResult.status === 'fulfilled' ? syncSummaryResult.value : null
+        const syncConflicts =
+          syncConflictsResult.status === 'fulfilled' ? syncConflictsResult.value : null
 
         const uiConvs: Conversation[] = conversations.map((c) => toUIConversation(c))
         const firstId = uiConvs[0]?.id ?? ''
@@ -215,6 +244,7 @@ export function useDelamainBackend() {
         setState((s) => ({
           ...s,
           connection: 'connected',
+          authRedirectUrl: null,
           conversations: convsWithMessages,
           folders: foldersResp.map(toUIFolder),
           activeConversationId: firstId,
@@ -233,8 +263,8 @@ export function useDelamainBackend() {
             modelsResp.fallback_cheap,
             modelsResp.paid_fallback,
           ].filter((value, index, arr): value is string => Boolean(value) && arr.indexOf(value) === index),
-          budgetUsed: budgetResp.copilot_budget.used_premium_requests,
-          budgetTotal: budgetResp.copilot_budget.monthly_premium_requests,
+          budgetUsed: budgetResp?.copilot_budget.used_premium_requests ?? s.budgetUsed,
+          budgetTotal: budgetResp?.copilot_budget.monthly_premium_requests ?? s.budgetTotal,
           healthEntries: toHealthEntriesFromHealth(health),
           tools: toolsResp.tools.map(toUITool),
           directActions: actionsResp.actions.map(toUIDirectAction),
@@ -246,7 +276,8 @@ export function useDelamainBackend() {
           syncthingDevices,
           syncthingConflicts,
         }))
-      } catch {
+      } catch (err) {
+        if (handleBackendError(err)) return
         if (!cancelled) setState((s) => ({ ...s, connection: 'offline' }))
       }
     }
@@ -255,7 +286,7 @@ export function useDelamainBackend() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [handleBackendError])
 
   // ── SSE subscription on active conversation ─────────────────────────────────
   const ssePath = useMemo(() => {
@@ -626,8 +657,8 @@ export function useDelamainBackend() {
           ),
         }))
       })
-      .catch(() => {
-        /* no-op */
+      .catch((err) => {
+        handleBackendError(err)
       })
     return () => {
       cancelled = true
@@ -724,10 +755,11 @@ export function useDelamainBackend() {
         sensitiveUnlocked: uiConv.sensitiveUnlocked ?? false,
         sensitive: uiConv.sensitiveUnlocked ?? false,
       }))
-    } catch {
+    } catch (err) {
+      handleBackendError(err)
       /* ignore */
     }
-  }, [connected, state])
+  }, [connected, handleBackendError, state])
 
   const handleSend = useCallback(
     async (content: string) => {
@@ -772,10 +804,7 @@ export function useDelamainBackend() {
           ),
         }))
       } catch (err) {
-        if (err instanceof AuthRequiredError && err.redirectUrl && typeof window !== 'undefined') {
-          window.location.href = err.redirectUrl
-          return
-        }
+        handleBackendError(err)
         setState((s) => ({
           ...s,
           conversations: s.conversations.map((c) =>
@@ -786,7 +815,7 @@ export function useDelamainBackend() {
         }))
       }
     },
-    [activeConversationId, connected, state]
+    [activeConversationId, connected, handleBackendError, state]
   )
 
   const handleToggleTool = useCallback(
@@ -806,14 +835,15 @@ export function useDelamainBackend() {
           enabled: nextEnabled,
           conversation_id: activeConversationId || undefined,
         })
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         setState((s) => ({
           ...s,
           tools: s.tools.map((t) => (t.id === toolId ? { ...t, enabled: !nextEnabled } : t)),
         }))
       }
     },
-    [activeConversationId, connected, state.tools]
+    [activeConversationId, connected, handleBackendError, state.tools]
   )
 
   const handleSetToolApprovalPolicy = useCallback(
@@ -824,11 +854,12 @@ export function useDelamainBackend() {
           approval_policy: policy,
           conversation_id: activeConversationId || undefined,
         })
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [activeConversationId, connected]
+    [activeConversationId, connected, handleBackendError]
   )
 
   const handleUnlockSensitive = useCallback(async () => {
@@ -864,10 +895,11 @@ export function useDelamainBackend() {
         conversationId: activeConversationId,
         event: 'sensitive.unlocked',
       })
-    } catch {
+    } catch (err) {
+      handleBackendError(err)
       /* ignore */
     }
-  }, [activeConversationId, connected, appendAudit])
+  }, [activeConversationId, connected, appendAudit, handleBackendError])
 
   const handleLockSensitive = useCallback(async () => {
     if (!activeConversationId) return
@@ -902,10 +934,11 @@ export function useDelamainBackend() {
         conversationId: activeConversationId,
         event: 'sensitive.locked',
       })
-    } catch {
+    } catch (err) {
+      handleBackendError(err)
       /* ignore */
     }
-  }, [activeConversationId, connected, appendAudit])
+  }, [activeConversationId, connected, appendAudit, handleBackendError])
 
   const handleRunDirectAction = useCallback(
     async (actionId: string) => {
@@ -947,7 +980,8 @@ export function useDelamainBackend() {
               : a
           ),
         }))
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         setState((s) => ({
           ...s,
           directActions: s.directActions.map((a) =>
@@ -956,7 +990,7 @@ export function useDelamainBackend() {
         }))
       }
     },
-    [activeConversationId, connected, state.directActions]
+    [activeConversationId, connected, handleBackendError, state.directActions]
   )
 
   const handleWorkerAction = useCallback(
@@ -983,11 +1017,12 @@ export function useDelamainBackend() {
             ),
           }))
         }
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleStartWorker = useCallback(
@@ -1012,11 +1047,12 @@ export function useDelamainBackend() {
           conversation_id: activeConversationId || null,
         })
         setState((s) => ({ ...s, workers: [toUIWorker(created), ...s.workers] }))
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [activeConversationId, connected]
+    [activeConversationId, connected, handleBackendError]
   )
 
   const startEditTitle = useCallback(() => {
@@ -1040,11 +1076,12 @@ export function useDelamainBackend() {
     if (connected) {
       try {
         await api.patchConversation(convoId, { title: trimmed })
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     }
-  }, [titleDraft, state.activeConversationId, connected])
+  }, [titleDraft, state.activeConversationId, connected, handleBackendError])
 
   const handleChangeTheme = useCallback((theme: ThemeName) => {
     patchState('theme', theme)
@@ -1058,10 +1095,12 @@ export function useDelamainBackend() {
         ...s,
         healthEntries: toHealthEntriesFromHealth(health),
       }))
-    } catch {
-      setState((s) => ({ ...s, connection: 'offline' }))
+    } catch (err) {
+      if (!handleBackendError(err)) {
+        setState((s) => ({ ...s, connection: 'offline' }))
+      }
     }
-  }, [connected])
+  }, [connected, handleBackendError])
 
   const handleChangeModel = useCallback((model: string) => {
     setState((s) => ({ ...s, model }))
@@ -1074,11 +1113,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.patchSettings({ model_default: model }, activeConversationId || undefined)
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         setState((s) => ({ ...s, defaultModel: prev }))
       }
     },
-    [activeConversationId, connected, state.defaultModel]
+    [activeConversationId, connected, handleBackendError, state.defaultModel]
   )
 
   const handleSetContextMode = useCallback(
@@ -1092,11 +1132,12 @@ export function useDelamainBackend() {
           { context_mode: mode === 'Blank-slate' ? 'blank_slate' : 'normal' },
           activeConversationId || undefined
         )
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         setState((s) => ({ ...s, contextMode: prevMode, blankSlate: prevBlankSlate }))
       }
     },
-    [activeConversationId, connected, state.blankSlate, state.contextMode]
+    [activeConversationId, connected, handleBackendError, state.blankSlate, state.contextMode]
   )
 
   const handleToggleTitleGeneration = useCallback(async () => {
@@ -1105,10 +1146,11 @@ export function useDelamainBackend() {
     if (!connected) return
     try {
       await api.patchSettings({ title_generation_enabled: next }, activeConversationId || undefined)
-    } catch {
+    } catch (err) {
+      handleBackendError(err)
       setState((s) => ({ ...s, titleGeneration: !next }))
     }
-  }, [activeConversationId, connected, state.titleGeneration])
+  }, [activeConversationId, connected, handleBackendError, state.titleGeneration])
 
   const handleChangeSystemContext = useCallback(
     async (value: string) => {
@@ -1117,11 +1159,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.patchContextFile('system-context', value, activeConversationId || undefined)
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         setState((s) => ({ ...s, systemContext: prev }))
       }
     },
-    [activeConversationId, connected, state.systemContext]
+    [activeConversationId, connected, handleBackendError, state.systemContext]
   )
 
   const handleChangeShortTermContinuity = useCallback(
@@ -1131,11 +1174,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.patchContextFile('short-term-continuity', value, activeConversationId || undefined)
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         setState((s) => ({ ...s, shortTermContinuity: prev }))
       }
     },
-    [activeConversationId, connected, state.shortTermContinuity]
+    [activeConversationId, connected, handleBackendError, state.shortTermContinuity]
   )
 
   const openPanel = useCallback(
@@ -1163,11 +1207,12 @@ export function useDelamainBackend() {
       try {
         const created = await api.createFolder({ name, parent_id: parentId })
         setState((s) => ({ ...s, folders: [...s.folders, toUIFolder(created)] }))
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleRenameFolder = useCallback(
@@ -1179,11 +1224,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.patchFolder(id, { name })
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleMoveFolder = useCallback(
@@ -1195,11 +1241,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.patchFolder(id, { parent_id: parentId })
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleDeleteFolder = useCallback(
@@ -1214,11 +1261,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.deleteFolder(id)
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleMoveConversation = useCallback(
@@ -1232,11 +1280,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.patchConversation(convoId, { folder_id: folderId })
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleDeleteConversation = useCallback(
@@ -1249,11 +1298,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.deleteConversation(convoId)
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleArchiveConversation = useCallback(
@@ -1267,11 +1317,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.patchConversation(convoId, { archived })
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   // ── Permissions ────────────────────────────────────────────────────────────
@@ -1286,11 +1337,12 @@ export function useDelamainBackend() {
             p.id === permissionId ? toUIPermission(resolved) : p
           ),
         }))
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   // ── Runs (retry/cancel) ────────────────────────────────────────────────────
@@ -1299,11 +1351,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.retryRun(runId)
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   const handleCancelRun = useCallback(
@@ -1311,11 +1364,12 @@ export function useDelamainBackend() {
       if (!connected) return
       try {
         await api.cancelRun(runId)
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   // ── Usage ──────────────────────────────────────────────────────────────────
@@ -1334,11 +1388,12 @@ export function useDelamainBackend() {
             .filter(Boolean)
             .map((provider) => toUISubscriptionProvider(provider)),
         }))
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   // ── Syncthing ──────────────────────────────────────────────────────────────
@@ -1354,10 +1409,11 @@ export function useDelamainBackend() {
         syncthingDevices: summary.devices.map(toUISyncthingDevice),
         syncthingConflicts: conflicts.conflicts.map(toUISyncthingConflict),
       }))
-    } catch {
+    } catch (err) {
+      handleBackendError(err)
       /* ignore */
     }
-  }, [connected])
+  }, [connected, handleBackendError])
 
   const handleResolveSyncthingConflict = useCallback(
     async (path: string, action: BackendSyncthingResolveAction, note?: string) => {
@@ -1368,11 +1424,12 @@ export function useDelamainBackend() {
           ...s,
           syncthingConflicts: s.syncthingConflicts.filter((c) => c.path !== path),
         }))
-      } catch {
+      } catch (err) {
+        handleBackendError(err)
         /* ignore */
       }
     },
-    [connected]
+    [connected, handleBackendError]
   )
 
   // ── Copilot hard-override ──────────────────────────────────────────────────
@@ -1385,10 +1442,11 @@ export function useDelamainBackend() {
         { copilot_budget_hard_override_enabled: next },
         activeConversationId || undefined
       )
-    } catch {
+    } catch (err) {
+      handleBackendError(err)
       setState((s) => ({ ...s, copilotBudgetHardOverride: !next }))
     }
-  }, [activeConversationId, connected, state.copilotBudgetHardOverride])
+  }, [activeConversationId, connected, handleBackendError, state.copilotBudgetHardOverride])
 
   return {
     state,

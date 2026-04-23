@@ -12,9 +12,10 @@ interface ContextEditorProps {
   initialContent: string
   onSave: (fileId: string, content: string) => void
   onClose: () => void
+  readOnly?: boolean
 }
 
-export function ContextEditor({ file, initialContent, onSave, onClose }: ContextEditorProps) {
+export function ContextEditor({ file, initialContent, onSave, onClose, readOnly = false }: ContextEditorProps) {
   const [draft, setDraft] = useState(initialContent)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
   const [dirty, setDirty] = useState(false)
@@ -30,6 +31,7 @@ export function ContextEditor({ file, initialContent, onSave, onClose }: Context
   }
 
   const handleSave = () => {
+    if (readOnly) return
     onSave(file.id, draft)
     setDirty(false)
   }
@@ -105,11 +107,11 @@ export function ContextEditor({ file, initialContent, onSave, onClose }: Context
               disabled={!dirty}
               className={cn(
                 'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-mono border transition-all',
-                dirty
+                dirty && !readOnly
                   ? 'text-black border-transparent hover:opacity-90'
                   : 'text-[#3a3a3a] border-white/[0.05] cursor-not-allowed'
               )}
-              style={dirty ? { backgroundColor: 'var(--accent-blue)', borderColor: 'var(--accent-blue)' } : {}}
+              style={dirty && !readOnly ? { backgroundColor: 'var(--accent-blue)', borderColor: 'var(--accent-blue)' } : {}}
             >
               <Save size={10} />
               Save
@@ -131,9 +133,10 @@ export function ContextEditor({ file, initialContent, onSave, onClose }: Context
             <textarea
               value={draft}
               onChange={(e) => handleChange(e.target.value)}
+              readOnly={readOnly}
               className="w-full h-full bg-transparent text-[13px] font-mono text-[#cccccc] leading-relaxed outline-none resize-none px-5 py-4"
               spellCheck={false}
-              placeholder="# Context file content..."
+              placeholder={readOnly ? 'Backend read-only preview unavailable.' : '# Context file content...'}
               aria-label="Edit context file"
             />
           ) : (

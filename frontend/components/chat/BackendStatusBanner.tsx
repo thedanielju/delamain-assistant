@@ -5,9 +5,10 @@ import { AlertTriangle, Loader2, Wifi } from 'lucide-react'
 
 interface Props {
   connection: BackendConnection
+  authRedirectUrl?: string | null
 }
 
-export function BackendStatusBanner({ connection }: Props) {
+export function BackendStatusBanner({ connection, authRedirectUrl }: Props) {
   if (connection === 'connected') return null
 
   const meta = {
@@ -20,6 +21,13 @@ export function BackendStatusBanner({ connection }: Props) {
       text: 'Backend unreachable — using local sample data',
       icon: <AlertTriangle size={10} />,
       color: 'var(--accent-pink)',
+    },
+    auth_required: {
+      text: authRedirectUrl
+        ? 'Authentication required — sign in to continue'
+        : 'Authentication required — refresh after Cloudflare Access login',
+      icon: <AlertTriangle size={10} />,
+      color: 'var(--accent-purple)',
     },
     mock: {
       text: 'Mock mode — no backend calls',
@@ -35,6 +43,16 @@ export function BackendStatusBanner({ connection }: Props) {
     >
       {meta.icon}
       <span>{meta.text}</span>
+      {connection === 'auth_required' && authRedirectUrl ? (
+        <button
+          onClick={() => {
+            window.location.href = authRedirectUrl
+          }}
+          className="px-2 py-0.5 rounded border border-current text-[10px] font-mono"
+        >
+          Sign in
+        </button>
+      ) : null}
     </div>
   )
 }

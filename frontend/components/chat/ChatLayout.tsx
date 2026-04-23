@@ -218,20 +218,10 @@ export function ChatLayout() {
       return
     }
     if (!contextContents[file.id]) {
-      const basename = file.path.split('/').pop()?.replace(/\.md$/, '') ?? ''
-      if (basename) {
-        api
-          .getContextFile(basename)
-          .then((resp) => {
-            setContextContents((prev) => ({ ...prev, [file.id]: resp.content }))
-          })
-          .catch(() => {
-            setContextContents((prev) => ({
-              ...prev,
-              [file.id]: `# ${file.name}\n\n_Unable to load content from backend._\n\nPath: \`${file.path}\`\n`,
-            }))
-          })
-      }
+      setContextContents((prev) => ({
+        ...prev,
+        [file.id]: `# ${file.name}\n\n_Backend editing is only available for system-context and short-term-continuity._\n\nPath: \`${file.path}\`\n`,
+      }))
     }
   }, [contextContents, state.systemContext, state.shortTermContinuity])
 
@@ -245,15 +235,6 @@ export function ChatLayout() {
           handleChangeSystemContext(content)
         } else if (detected === 'short-term-continuity') {
           handleChangeShortTermContinuity(content)
-        } else {
-          const basename = file.path.split('/').pop()?.replace(/\.md$/, '') ?? ''
-          if (basename) {
-            api
-              .patchContextFile(basename, content, state.activeConversationId || undefined)
-              .catch(() => {
-                /* ignore */
-              })
-          }
         }
       }
       setContextEditFile(null)
@@ -441,7 +422,7 @@ export function ChatLayout() {
           </div>
         </header>
 
-        <BackendStatusBanner connection={state.connection} />
+        <BackendStatusBanner connection={state.connection} authRedirectUrl={state.authRedirectUrl} />
 
         <ContextBanner
           mode={state.contextMode}
@@ -598,6 +579,7 @@ export function ChatLayout() {
           initialContent={contextContents[contextEditFile.id] ?? ''}
           onSave={handleSaveContextFile}
           onClose={() => setContextEditFile(null)}
+          readOnly={detectContextFileId(contextEditFile) === null}
         />
       )}
 

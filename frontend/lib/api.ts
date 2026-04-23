@@ -59,7 +59,13 @@ function asAuthRequired(body: unknown): AuthRequiredDetail | null {
   const detail = (body as { detail?: unknown }).detail
   if (!detail || typeof detail !== 'object') return null
   const d = detail as Record<string, unknown>
-  if (d.code === 'auth_required') return d as unknown as AuthRequiredDetail
+  if (typeof d.code === 'string' && d.code.toLowerCase() === 'auth_required') {
+    return {
+      code: 'auth_required',
+      message: typeof d.message === 'string' ? d.message : 'Auth required',
+      redirect_url: typeof d.redirect_url === 'string' ? d.redirect_url : undefined,
+    }
+  }
   return null
 }
 
@@ -75,13 +81,14 @@ async function request<T>(path: string, init: RequestInitExt = {}): Promise<T> {
 
   let res: Response
   try {
+    const headers = new Headers(rest.headers)
+    if (rest.body != null && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json')
+    }
     res = await fetch(`${API_BASE}${path}`, {
       ...rest,
       credentials: rest.credentials ?? 'same-origin',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(rest.headers ?? {}),
-      },
+      headers,
       signal: controller?.signal ?? rest.signal,
     })
   } catch (err) {
