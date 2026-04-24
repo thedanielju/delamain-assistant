@@ -307,6 +307,63 @@ def test_tool_approval_policy_can_pause_and_resume_run(m4_config):
         assert run["status"] == "completed"
 
 
+def test_cancel_waiting_approval_resolves_permission_and_stays_cancelled(m4_config):
+    call = {
+        "id": "call_now",
+        "name": "get_now",
+        "arguments": {},
+        "source_api_family": "responses",
+        "raw": {},
+    }
+    app = create_app(m4_config, model_client=ToolCallModelClient(call))
+    with TestClient(app) as client:
+        tool_settings = client.patch(
+            "/api/settings/tools/get_now",
+            json={"approval_policy": "confirm"},
+        )
+        assert tool_settings.status_code == 200
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        run_id = client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "cancel while waiting approval"},
+        ).json()["run_id"]
+        run = _wait_for_status(client, run_id, "waiting_approval")
+        assert run["status"] == "waiting_approval"
+
+        pending = client.get(f"/api/runs/{run_id}/permissions").json()
+        assert pending[0]["status"] == "pending"
+        permission_id = pending[0]["id"]
+
+        cancelled = client.post(f"/api/runs/{run_id}/cancel").json()
+        assert cancelled["status"] == "cancelled"
+
+        time.sleep(0.4)
+        final_run = client.get(f"/api/runs/{run_id}").json()
+        assert final_run["status"] == "cancelled"
+
+        permissions = client.get(f"/api/runs/{run_id}/permissions").json()
+        resolved = next(item for item in permissions if item["id"] == permission_id)
+        assert resolved["status"] == "resolved"
+        assert resolved["decision"] == "denied"
+        assert resolved["resolver"] == "system"
+        assert resolved["note"] == "Run cancelled while awaiting approval"
+
+    con = sqlite3.connect(m4_config.database.path)
+    permission_event = con.execute(
+        "SELECT payload FROM events WHERE run_id = ? AND type = 'permission.resolved' ORDER BY id DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    tool_call = con.execute(
+        "SELECT status, error_message FROM tool_calls WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    con.close()
+
+    assert json.loads(permission_event[0])["resolver"] == "system"
+    assert tool_call[0] == "cancelled"
+    assert "awaiting approval" in tool_call[1]
+
+
 def test_model_cannot_unlock_sensitive_by_tool_call(m4_config):
     assert default_tool_registry(m4_config).has_tool("sensitive_unlock") is False
     call = {

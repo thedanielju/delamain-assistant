@@ -218,6 +218,41 @@ class WorkerManager:
             "output": output,
         }
 
+    async def rename(self, worker_id: str, name: str) -> dict[str, Any]:
+        row = await self._get_worker(worker_id)
+        cleaned = name.strip()
+        if not cleaned:
+            raise ValueError("Worker name cannot be empty")
+        existing = await self.db.fetchone(
+            """
+            SELECT id FROM workers
+            WHERE name = ? AND id != ? AND status IN ('running', 'starting')
+            """,
+            (cleaned, worker_id),
+        )
+        if existing is not None:
+            raise ValueError(f"A worker named '{cleaned}' is already running")
+        await self.db.execute(
+            """
+            UPDATE workers
+            SET name = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (cleaned, worker_id),
+        )
+        await self._audit(
+            row.get("conversation_id"),
+            "worker.renamed",
+            f"Worker {row['name']} renamed to {cleaned}",
+            {
+                "worker_id": worker_id,
+                "old_name": row["name"],
+                "new_name": cleaned,
+            },
+        )
+        return await self._worker_out(worker_id)
+
     async def list_workers(
         self,
         *,

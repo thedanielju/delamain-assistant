@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from delamain_backend.agent.context import context_items_for_run
+from delamain_backend.agent.context import load_context_for_run
 from delamain_backend.agent.litellm_client import LiteLLMModelClient, ModelClient, StubModelClient
 from delamain_backend.agent.router import api_family_for_route, fallback_chain
 from delamain_backend.agent.tool_loop import MaxToolIterationsExceeded
@@ -22,6 +22,10 @@ from delamain_backend.tools import ToolExecutionContext, ToolRegistry, default_t
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+class _RunCancelled(Exception):
+    pass
 
 
 class RunManager:
@@ -106,26 +110,37 @@ class RunManager:
                 payload={"run_id": run_id, "model_route": run["model_route"]},
             )
 
-            context_items = context_items_for_run(self.config, run["context_mode"])
-            await self._persist_context_loads(run_id, context_items)
+            loaded_context = load_context_for_run(self.config, run["context_mode"])
+            if loaded_context.clock_refresh:
+                await self.bus.emit(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    event_type="audit",
+                    payload={
+                        "action": "context.clock_refreshed",
+                        "summary": "Refreshed system-context clock block for this run",
+                        **loaded_context.clock_refresh,
+                    },
+                )
+            await self._persist_context_loads(run_id, loaded_context.items)
             await self.bus.emit(
                 conversation_id=conversation_id,
                 run_id=run_id,
                 event_type="context.loaded",
-                payload={"items": context_items},
+                payload={"items": loaded_context.items},
             )
 
-            messages = await self._initial_model_messages(run)
+            messages = await self._initial_model_messages(
+                run,
+                context_messages=loaded_context.prompt_messages,
+            )
             assistant_text = await self._run_model_tool_loop(
                 run=run,
                 assistant_message_id=assistant_message_id,
                 messages=messages,
             )
             if await self._run_is_cancelled(run_id):
-                await self.db.execute(
-                    "UPDATE messages SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-                    (assistant_message_id,),
-                )
+                await self._mark_assistant_message_cancelled(assistant_message_id)
                 return
 
             await self.db.execute(
@@ -158,15 +173,24 @@ class RunManager:
                 event_type="run.completed",
                 payload={"run_id": run_id, "status": "completed"},
             )
+        except _RunCancelled:
+            await self._mark_assistant_message_cancelled(assistant_message_id)
+            return
         except Exception as exc:
             await self._fail_run(run, exc, assistant_message_id)
 
-    async def _initial_model_messages(self, run: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _initial_model_messages(
+        self,
+        run: dict[str, Any],
+        *,
+        context_messages: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
         user_message = await self.db.fetchone(
             "SELECT * FROM messages WHERE id = ?", (run["user_message_id"],)
         )
         return [
             {"role": "system", "content": "You are DELAMAIN."},
+            *context_messages,
             {"role": "user", "content": user_message["content"] if user_message else ""},
         ]
 
@@ -478,6 +502,32 @@ class RunManager:
                     sensitive_unlocked=bool(conversation and conversation["sensitive_unlocked"]),
                 ),
             )
+        except _RunCancelled as exc:
+            await self.db.execute(
+                """
+                UPDATE tool_calls
+                SET status = 'cancelled',
+                    error_message = ?,
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (str(exc), tool_call_id),
+            )
+            await self.bus.emit(
+                conversation_id=run["conversation_id"],
+                run_id=run["id"],
+                event_type="tool.finished",
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "assistant_message_id": assistant_message_id,
+                    "status": "cancelled",
+                    "duration_ms": 0,
+                    "result_summary": str(exc)[:200],
+                    "stdout": "",
+                    "stderr": str(exc),
+                },
+            )
+            raise
         except Exception as exc:
             if isinstance(exc, SensitiveLocked) or _arguments_target_sensitive(
                 arguments, self.config.paths.sensitive
@@ -655,13 +705,27 @@ class RunManager:
         )
         while True:
             if await self._run_is_cancelled(run["id"]):
-                raise ToolPolicyDenied(f"Permission cancelled for tool call: {tool_name}")
+                await self._resolve_permission(
+                    permission_id=permission_id,
+                    conversation_id=run["conversation_id"],
+                    run_id=run["id"],
+                    decision="denied",
+                    resolver="system",
+                    note="Run cancelled while awaiting approval",
+                )
+                raise _RunCancelled(
+                    f"Run cancelled while awaiting approval for tool call: {tool_name}"
+                )
             row = await self.db.fetchone(
                 "SELECT status, decision FROM permissions WHERE id = ?",
                 (permission_id,),
             )
             if row and row["status"] == "resolved":
                 if row["decision"] == "approved":
+                    if await self._run_is_cancelled(run["id"]):
+                        raise _RunCancelled(
+                            f"Run cancelled while awaiting approval for tool call: {tool_name}"
+                        )
                     await self.db.execute(
                         "UPDATE runs SET status = 'running' WHERE id = ?",
                         (run["id"],),
@@ -669,6 +733,44 @@ class RunManager:
                     return
                 raise ToolPolicyDenied(f"Permission denied for tool call: {tool_name}")
             await asyncio.sleep(0.25)
+
+    async def _resolve_permission(
+        self,
+        *,
+        permission_id: str,
+        conversation_id: str,
+        run_id: str,
+        decision: str,
+        resolver: str,
+        note: str | None = None,
+    ) -> None:
+        row = await self.db.fetchone("SELECT * FROM permissions WHERE id = ?", (permission_id,))
+        if row is None or row["status"] != "pending":
+            return
+        await self.db.execute(
+            """
+            UPDATE permissions
+            SET status = 'resolved',
+                decision = ?,
+                note = ?,
+                resolver = ?,
+                resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (decision, note, resolver, permission_id),
+        )
+        await self.bus.emit(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            event_type="permission.resolved",
+            payload={
+                "run_id": run_id,
+                "permission_id": permission_id,
+                "decision": decision,
+                "resolver": resolver,
+                "note": note,
+            },
+        )
 
     async def _emit_sensitive_access_audit(
         self,
@@ -711,6 +813,17 @@ class RunManager:
                 payload={"message_id": message_id, "text": chunk},
             )
             await asyncio.sleep(0)
+
+    async def _mark_assistant_message_cancelled(self, assistant_message_id: str) -> None:
+        await self.db.execute(
+            """
+            UPDATE messages
+            SET status = 'cancelled',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (assistant_message_id,),
+        )
 
     async def _persist_context_loads(self, run_id: str, items: list[dict]) -> None:
         for item in items:

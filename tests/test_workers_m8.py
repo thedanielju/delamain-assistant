@@ -443,6 +443,51 @@ def test_conversation_scoped_worker_list(test_config, shell_worker_registry, tmp
             socket_path.unlink()
 
 
+def test_worker_rename_persists_and_emits_audit(test_config, shell_worker_registry, tmp_path):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        from delamain_backend.workers.manager import WorkerManager
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+
+        conv_id = client.post("/api/conversations", json={}).json()["id"]
+        result = loop.run_until_complete(
+            mgr.start("test_shell", name="rename-before", conversation_id=conv_id)
+        )
+        worker_id = result["id"]
+
+        renamed = loop.run_until_complete(mgr.rename(worker_id, "rename-after"))
+        assert renamed["name"] == "rename-after"
+
+        row = loop.run_until_complete(mgr.get_worker(worker_id))
+        assert row["name"] == "rename-after"
+
+        con = sqlite3.connect(test_config.database.path)
+        event = con.execute(
+            "SELECT payload FROM events WHERE conversation_id = ? AND type = 'audit' ORDER BY id DESC LIMIT 1",
+            (conv_id,),
+        ).fetchone()
+        con.close()
+
+        payload = json.loads(event[0])
+        assert payload["action"] == "worker.renamed"
+        assert payload["old_name"] == "rename-before"
+        assert payload["new_name"] == "rename-after"
+
+        loop.run_until_complete(mgr.kill(worker_id))
+        if socket_path.exists():
+            socket_path.unlink()
+
+
 def test_worker_api_endpoints(test_config):
     """Test the REST endpoints via TestClient."""
     app = create_app(test_config)
@@ -469,6 +514,37 @@ def test_worker_api_endpoints(test_config):
         not_found = client.get("/api/workers/worker_nonexistent")
         assert not_found.status_code == 404
         assert id(app.state.worker_manager) == manager_id
+
+
+def test_worker_rename_endpoint(test_config, shell_worker_registry, tmp_path):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        from delamain_backend.workers.manager import WorkerManager
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        app.state.worker_manager = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+
+        created = loop.run_until_complete(
+            app.state.worker_manager.start("test_shell", name="endpoint-before")
+        )
+        renamed = client.patch(
+            f"/api/workers/{created['id']}",
+            json={"name": "endpoint-after"},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "endpoint-after"
+
+        loop.run_until_complete(app.state.worker_manager.kill(created["id"]))
+        if socket_path.exists():
+            socket_path.unlink()
 
 
 def test_worker_audit_events(test_config, shell_worker_registry, tmp_path):

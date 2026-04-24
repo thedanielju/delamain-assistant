@@ -16,6 +16,10 @@ class WorkerStartRequest(BaseModel):
     conversation_id: str | None = None
 
 
+class WorkerRenameRequest(BaseModel):
+    name: str
+
+
 @router.get("/workers/types")
 async def list_worker_types(registry: WorkerTypeRegistry = Depends(get_worker_registry)):
     return {"types": registry.list()}
@@ -61,6 +65,20 @@ async def get_worker(
         return await mgr.get_worker(worker_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.patch("/workers/{worker_id}")
+async def rename_worker(
+    worker_id: str,
+    payload: WorkerRenameRequest,
+    mgr: WorkerManager = Depends(get_worker_manager),
+):
+    try:
+        return await mgr.rename(worker_id, payload.name)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 @router.post("/workers/{worker_id}/stop")
