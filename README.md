@@ -62,22 +62,55 @@ This repository includes:
 
 ## Current Status
 
-As of 2026-04-23:
+As of 2026-04-24:
 
 - the backend contract described for Phase 2 is implemented in this repo
 - the frontend is wired against that contract
 - the production backend on `serrano` runs on `127.0.0.1:8420`
-- a dev-local backend sidecar runs on `127.0.0.1:8421`
 - the `serrano` frontend service runs on `127.0.0.1:3000`
-- `chat.danielju.com` serves the Next.js frontend
-- `term.danielju.com` remains the Cloudflare Access protected admin and ttyd surface
+- a dev-local backend sidecar may still exist on `127.0.0.1:8421`, but the public path no longer depends on it
+- `term.danielju.com` is the canonical Cloudflare Access protected public hostname
+- `term.danielju.com/` serves the Next.js frontend
+- `term.danielju.com/api/*` proxies to the production backend on `8420`
+- `term.danielju.com/terminal/` proxies to ttyd
+- `chat.danielju.com` is redirect-only and returns `308` to `term.danielju.com`
 
-Important deployment note:
+On Daniel's Mac, the canonical local working copy is:
 
-- the public frontend currently rewrites same-origin `/api/*` to the dev-local backend sidecar on `8421`
-- the hardened production backend with Cloudflare Access enforcement remains on `8420`
+- `/Users/danielju/Desktop/delamain-assistant.nosync`
 
-So the code is in place, but the final public ingress path is still in a transitional state.
+The `.nosync` suffix is intentional so the live repo does not become an iCloud-synced working tree.
+
+## Configured Model Routes
+
+DELAMAIN currently exposes four configured model routes:
+
+- `github_copilot/gpt-5.4-mini`
+  - primary DELAMAIN route
+  - default persisted backend model
+  - best fit for normal chat, tool-calling, and higher-confidence base assistant behavior
+
+- `github_copilot/gpt-5-mini`
+  - high-volume fallback route
+  - good fit for general work when Daniel wants faster or lower-cost runs
+
+- `github_copilot/claude-haiku-4.5`
+  - cheap fallback route
+  - good fit for lightweight summaries, classification, and low-stakes background tasks
+
+- `openrouter/deepseek/deepseek-v3.2`
+  - paid escalation route
+  - backend fallback when Copilot routes are blocked or fail
+  - also the current OpenCode runtime model behind ttyd
+
+Current user-visible model selection surfaces are:
+
+- active route
+  - chosen per conversation/run in the frontend
+- default model
+  - persisted backend setting used for new runs unless overridden
+- task model
+  - browser-local setting used today for worker summaries and similar background tasks
 
 ## Architecture
 
@@ -246,9 +279,9 @@ The fastest feedback loop is the local Mac wrapper:
 - behavior:
   - real frontend
   - real API data
-  - proxied to the `serrano` dev-local backend sidecar
+- optionally proxied to either a local backend on `8420` or a local tunnel to the `serrano` dev-local sidecar on `8421`
 
-That setup is for iteration speed. It is not the final production auth path.
+That setup is for iteration speed. It is not the live production auth path.
 
 ## Local Development
 
@@ -262,7 +295,8 @@ That setup is for iteration speed. It is not the final production auth path.
 
 ```bash
 git clone https://github.com/thedanielju/delamain-assistant.git
-cd delamain-assistant
+mv delamain-assistant ~/Desktop/delamain-assistant.nosync
+cd ~/Desktop/delamain-assistant.nosync
 ```
 
 ### 2. Set up the backend
@@ -361,13 +395,14 @@ Service unit:
 /home/danielju/.config/systemd/user/delamain-frontend.service
 ```
 
-At the moment that service is configured with:
+Live production wiring on `serrano` is:
 
 - `NEXT_PUBLIC_DELAMAIN_API_BASE=/api`
-- `DELAMAIN_DEV_API_PROXY=http://127.0.0.1:8421`
-- port `3000`
-
-That is why the public frontend is still using the transitional API path.
+- no active `DELAMAIN_DEV_API_PROXY` in the systemd frontend unit
+- frontend on `127.0.0.1:3000`
+- nginx `/` -> `3000`
+- nginx `/api/` -> `8420`
+- nginx `/terminal/` -> ttyd on `7681`
 
 ### Open WebUI status
 
@@ -382,14 +417,15 @@ Operational changes already made on `serrano`:
 
 ### Public surfaces
 
-- `chat.danielju.com`
-  - Next.js frontend on `serrano`
-  - currently using the transitional `/api -> 8421` path
-
 - `term.danielju.com`
-  - Cloudflare Access protected admin and ttyd surface
-  - `/api` forwarded to production backend on `8420`
-  - `/` forwarded to ttyd
+  - canonical Cloudflare Access protected public hostname
+  - `/` -> Next.js frontend on `127.0.0.1:3000`
+  - `/api/` -> production backend on `127.0.0.1:8420`
+  - `/terminal/` -> ttyd on `127.0.0.1:7681`
+
+- `chat.danielju.com`
+  - redirect-only
+  - `308` to `https://term.danielju.com$request_uri`
 
 ## Security Model
 
