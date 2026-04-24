@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Menu, Settings, Activity, Cpu, Pencil, X, DollarSign } from 'lucide-react'
+import { Menu, Settings, Activity, Cpu, Pencil, X, DollarSign, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from './Sidebar'
 import { ChatPane } from './ChatPane'
@@ -20,6 +20,7 @@ import { PermissionModal } from './PermissionModal'
 import { BackendStatusBanner } from './BackendStatusBanner'
 import { SensitiveLockBadge } from './SensitiveLockBadge'
 import { AuditTrail } from './AuditTrail'
+import { VaultPanel } from './VaultPanel'
 import { useDelamainBackend } from '@/hooks/useDelamainBackend'
 import { api } from '@/lib/api'
 import type { RightPanelId, ContextFile } from '@/lib/types'
@@ -152,6 +153,9 @@ export function ChatLayout() {
     handleResolvePermission,
     handleRetryRun,
     handleCancelRun,
+    handleSummarizeWorker,
+    handleRenameWorker,
+    retryConnection,
   } = useDelamainBackend()
 
   const handleRenameConversation = useCallback(
@@ -410,6 +414,17 @@ export function ChatLayout() {
             </button>
 
             <button
+              onClick={() => openPanel('vault')}
+              className={cn('relative text-[#555555] hover:text-white transition-colors p-1.5 rounded')}
+              style={state.rightPanel === 'vault' ? { color: 'var(--accent-blue)' } : {}}
+              aria-label="Vault panel"
+              aria-pressed={state.rightPanel === 'vault'}
+              title="Vault graph — requires backend Prompt D"
+            >
+              <Network size={14} />
+            </button>
+
+            <button
               onClick={() => openPanel('settings')}
               className={cn('text-[#555555] hover:text-white transition-colors p-1.5 rounded')}
               style={state.rightPanel === 'settings' ? { color: 'var(--accent-blue)' } : {}}
@@ -422,7 +437,11 @@ export function ChatLayout() {
           </div>
         </header>
 
-        <BackendStatusBanner connection={state.connection} authRedirectUrl={state.authRedirectUrl} />
+        <BackendStatusBanner
+          connection={state.connection}
+          authRedirectUrl={state.authRedirectUrl}
+          onRetry={retryConnection}
+        />
 
         <ContextBanner
           mode={state.contextMode}
@@ -483,8 +502,10 @@ export function ChatLayout() {
               <SyncthingPanel
                 devices={state.syncthingDevices}
                 conflicts={state.syncthingConflicts}
+                directActions={state.directActions}
                 onRefresh={handleRefreshSyncthing}
                 onResolveConflict={handleResolveSyncthingConflict}
+                onRunDirectAction={handleRunDirectAction}
               />
             </div>
           </aside>
@@ -511,6 +532,22 @@ export function ChatLayout() {
         </>
       )}
 
+      {state.rightPanel === 'vault' && (
+        <>
+          <div className="fixed inset-0 z-20 bg-black/60 xl:hidden" onClick={closePanel} aria-hidden="true" />
+          <aside
+            className="relative flex-shrink-0 flex flex-col h-full bg-[#080808] border-l border-white/[0.06] z-30"
+            style={{ width: rightPanelResize.width }}
+          >
+            <DragHandle onMouseDown={rightPanelResize.onMouseDown} side="left" />
+            <PanelHeader title="Vault" onClose={closePanel} />
+            <div className="flex-1 overflow-hidden">
+              <VaultPanel conversationId={state.activeConversationId} />
+            </div>
+          </aside>
+        </>
+      )}
+
       {state.rightPanel === 'workers' && (
         <>
           <div className="fixed inset-0 z-20 bg-black/60 xl:hidden" onClick={closePanel} aria-hidden="true" />
@@ -525,6 +562,8 @@ export function ChatLayout() {
                 workers={state.workers}
                 workerTypeOptions={state.workerTypeOptions}
                 onAction={handleWorkerAction}
+                onSummarize={handleSummarizeWorker}
+                onRename={handleRenameWorker}
                 onStartWorker={handleStartWorker}
               />
             </div>

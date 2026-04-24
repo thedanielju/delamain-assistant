@@ -6,6 +6,12 @@ interface ConfirmModalProps {
   title: string
   description: string
   confirmLabel?: string
+  /**
+   * When true, show the "this will create an audit event" footer. Should
+   * match actual backend behaviour — only Sensitive/settings/context/worker
+   * actions persist audit events. Defaults to false so we don't lie.
+   */
+  auditEvent?: boolean
   onConfirm: () => void
   onCancel: () => void
 }
@@ -14,6 +20,7 @@ export function ConfirmModal({
   title,
   description,
   confirmLabel = 'Confirm',
+  auditEvent = false,
   onConfirm,
   onCancel,
 }: ConfirmModalProps) {
@@ -38,10 +45,12 @@ export function ConfirmModal({
         {/* Body */}
         <p className="text-xs font-sans text-[#888888] leading-relaxed">{description}</p>
 
-        {/* Audit note */}
-        <p className="text-[10px] font-mono text-[#444444] border-t border-white/[0.06] pt-3">
-          This action will create an audit event.
-        </p>
+        {/* Audit note (only when backend actually emits one) */}
+        {auditEvent && (
+          <p className="text-[10px] font-mono text-[#444444] border-t border-white/[0.06] pt-3">
+            This action will create an audit event.
+          </p>
+        )}
 
         {/* Actions */}
         <div className="flex items-center justify-end gap-2">

@@ -121,7 +121,18 @@ export type WorkerStatus = 'running' | 'stopped' | 'idle' | 'capturing'
 export interface Worker {
   id: string
   name: string
-  type: 'opencode' | 'claude' | 'tmux' | 'winpc_shell' | 'generic'
+  type:
+    | 'opencode'
+    | 'claude'
+    | 'codex'
+    | 'gemini'
+    | 'tmux'
+    | 'winpc_shell'
+    | 'winpc_opencode'
+    | 'winpc_claude'
+    | 'winpc_codex'
+    | 'winpc_gemini'
+    | 'generic'
   host: 'local' | 'serrano' | 'winpc'
   status: WorkerStatus
   startedAt?: string
@@ -158,7 +169,43 @@ export interface ThemeConfig {
 
 // ── Right panel ───────────────────────────────────────────────────────────────
 
-export type RightPanelId = 'settings' | 'health' | 'workers' | 'usage' | 'syncthing' | null
+export type RightPanelId = 'settings' | 'health' | 'workers' | 'usage' | 'syncthing' | 'vault' | null
+
+// ── Vault index ───────────────────────────────────────────────────────────────
+// Shape matches backend Prompt D. Endpoints may 404 until Prompt D lands;
+// the frontend degrades gracefully in that case.
+
+export interface VaultNode {
+  id: string
+  path: string
+  title: string
+  tags: string[]
+  aliases: string[]
+  mtime: string
+  bytes: number | null
+}
+
+export interface VaultEdge {
+  from: string
+  to: string
+  kind: 'wikilink' | 'tag'
+}
+
+export interface VaultGraph {
+  nodes: VaultNode[]
+  edges: VaultEdge[]
+  generated_at: string
+}
+
+export interface VaultNoteDetail {
+  path: string
+  title: string
+  content: string
+  bytes: number
+  sha256: string
+  tags: string[]
+  backlinks: string[]
+}
 
 // ── Permissions ───────────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   RefreshCw,
   ChevronDown,
@@ -11,10 +11,12 @@ import {
   Archive,
   Trash2,
   Copy,
+  ExternalLink,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ConfirmModal } from './ConfirmModal'
 import type {
+  DirectAction,
   SyncthingConflict,
   SyncthingDevice,
   SyncthingFolderStatus,
@@ -163,8 +165,8 @@ function DeviceCard({ device }: { device: SyncthingDevice }) {
                 Connections
               </p>
               <ul className="flex flex-col gap-1">
-                {device.connections.map((c) => (
-                  <ConnectionRow key={c.deviceId} conn={c} />
+                {device.connections.map((c, i) => (
+                  <ConnectionRow key={`${c.deviceId}-${c.address ?? ''}-${i}`} conn={c} />
                 ))}
               </ul>
             </div>
@@ -374,12 +376,15 @@ function ToastStack({ toasts }: { toasts: PanelToast[] }) {
 interface SyncthingPanelProps {
   devices: SyncthingDevice[]
   conflicts: SyncthingConflict[]
+  /** Quick actions; we pick sync_guard.status for the inline reconcile button. */
+  directActions: DirectAction[]
   onRefresh: () => void | Promise<void>
   onResolveConflict: (
     path: string,
     action: ResolveAction,
     note?: string
   ) => void | Promise<void>
+  onRunDirectAction: (actionId: string) => void | Promise<void>
 }
 
 interface PendingConfirm {
@@ -390,9 +395,12 @@ interface PendingConfirm {
 export function SyncthingPanel({
   devices,
   conflicts,
+  directActions,
   onRefresh,
   onResolveConflict,
+  onRunDirectAction,
 }: SyncthingPanelProps) {
+  const syncGuardAction = directActions.find((a) => a.id === 'sync_guard.status')
   const [refreshing, setRefreshing] = useState(false)
   const [pending, setPending] = useState<PendingConfirm | null>(null)
   const [toasts, setToasts] = useState<PanelToast[]>([])
@@ -411,6 +419,23 @@ export function SyncthingPanel({
       setTimeout(() => setRefreshing(false), 600)
     })
   }, [onRefresh])
+
+  // Auto-refresh every 30s while the panel is mounted. Sync Guard's own
+  // cadence on winpc/serrano is 15 min, so we don't need to hammer the
+  // backend; 30s is plenty to reflect user actions.
+  useEffect(() => {
+    const h = setInterval(() => onRefresh(), 30_000)
+    return () => clearInterval(h)
+  }, [onRefresh])
+
+  // Errored folders = folder-level Syncthing errors (pull/scan), not file
+  // conflicts. These stay visible until the folder recovers or is resolved
+  // on the origin host.
+  const erroredFolders = devices.flatMap((d) =>
+    d.folders
+      .filter((f) => (f.errors ?? 0) > 0 || (f.pullErrors ?? 0) > 0)
+      .map((f) => ({ host: d.host, folder: f }))
+  )
 
   const handleRequestAction = useCallback(
     (path: string, action: ResolveAction) => {
@@ -440,27 +465,78 @@ export function SyncthingPanel({
 
       {/* Header / refresh */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <span className="text-[10px] font-mono text-[#555555]">
             {devices.length} device{devices.length === 1 ? '' : 's'}
           </span>
+          {erroredFolders.length > 0 && (
+            <span
+              className="text-[10px] font-mono"
+              style={{ color: 'var(--accent-pink)' }}
+              title="Folder-level Syncthing errors (pull/scan). Separate from file conflicts."
+            >
+              {erroredFolders.length} folder error{erroredFolders.length === 1 ? '' : 's'}
+            </span>
+          )}
           {conflicts.length > 0 && (
-            <span className="text-[10px] font-mono text-[var(--accent-pink)]">
-              {conflicts.length} conflict{conflicts.length === 1 ? '' : 's'}
+            <span
+              className="text-[10px] font-mono text-[var(--accent-pink)]"
+              title="Files with .sync-conflict-* siblings waiting for manual resolution"
+            >
+              {conflicts.length} file conflict{conflicts.length === 1 ? '' : 's'}
             </span>
           )}
         </div>
-        <button
-          onClick={handleRefresh}
-          className="text-[#555555] hover:text-[var(--accent-blue)] transition-colors p-1 rounded"
-          aria-label="Refresh syncthing"
-        >
-          <RefreshCw
-            size={12}
-            className={cn('transition-transform', refreshing && 'animate-spin')}
-          />
-        </button>
+        <div className="flex items-center gap-1">
+          {syncGuardAction && (
+            <button
+              onClick={() => onRunDirectAction(syncGuardAction.id)}
+              disabled={syncGuardAction.status === 'running'}
+              className={cn(
+                'inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-white/[0.08] text-[10px] font-mono text-[#888888] hover:border-white/20 hover:text-white transition-all',
+                syncGuardAction.status === 'running' && 'opacity-60 cursor-wait'
+              )}
+              title="Run sync_guard.status on the backend (serrano). winpc runs automatically every 15 min."
+            >
+              <RefreshCw
+                size={10}
+                className={cn(syncGuardAction.status === 'running' && 'animate-spin')}
+              />
+              {syncGuardAction.status === 'running' ? 'running…' : 'reconcile'}
+            </button>
+          )}
+          <button
+            onClick={handleRefresh}
+            className="text-[#555555] hover:text-[var(--accent-blue)] transition-colors p-1 rounded"
+            aria-label="Refresh syncthing"
+            title="Refetch Syncthing summary + conflicts"
+          >
+            <RefreshCw
+              size={12}
+              className={cn('transition-transform', refreshing && 'animate-spin')}
+            />
+          </button>
+        </div>
       </div>
+
+      {/* sync_guard.status result strip */}
+      {syncGuardAction && (syncGuardAction.status === 'done' || syncGuardAction.status === 'error') && syncGuardAction.result && (
+        <div
+          className={cn(
+            'rounded-md border px-2.5 py-1.5 font-mono text-[10px] leading-relaxed',
+            syncGuardAction.status === 'error'
+              ? 'border-[var(--accent-pink)]/30 bg-[var(--accent-pink)]/5 text-[var(--accent-pink)]'
+              : 'border-white/[0.06] bg-[#0a0a0a] text-[#888888]'
+          )}
+        >
+          <div className="text-[#3a3a3a] uppercase tracking-wider text-[9px] mb-0.5">
+            sync_guard.status
+          </div>
+          <pre className="whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+            {syncGuardAction.result}
+          </pre>
+        </div>
+      )}
 
       {/* Devices */}
       <div className="flex flex-col gap-2">
@@ -476,14 +552,66 @@ export function SyncthingPanel({
         )}
       </div>
 
-      {/* Conflicts */}
+      {/* Folder errors */}
       <div className="flex flex-col gap-2 mt-1">
         <p className="text-[9px] font-mono text-[#3a3a3a] uppercase tracking-wider">
-          Conflicts
+          Folder errors
+        </p>
+        {erroredFolders.length === 0 ? (
+          <p className="text-xs font-mono text-[#3a3a3a] text-center py-3">
+            No folder-level errors
+          </p>
+        ) : (
+          <>
+            <p className="text-[10px] font-mono text-[#555555] leading-relaxed">
+              Pull/scan errors reported by Syncthing. Not the same as file conflicts.
+              Resolve on the originating host's Syncthing Web UI (default port 8384).
+            </p>
+            {erroredFolders.map(({ host, folder }) => (
+              <div
+                key={`${host}-${folder.folderId}`}
+                className="rounded-xl border border-white/[0.07] bg-[#0d0d0d] px-3 py-2.5 flex items-start gap-2.5"
+              >
+                <AlertTriangle
+                  size={12}
+                  style={{ color: 'var(--accent-pink)' }}
+                  className="flex-shrink-0 mt-0.5"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-mono text-[#cccccc] truncate">
+                    {host} · {folder.folderId}
+                  </p>
+                  <p className="text-[10px] font-mono text-[#666666]">
+                    errors {folder.errors ?? 0} · pullErrors {folder.pullErrors ?? 0} ·
+                    state {folder.state ?? 'unknown'}
+                  </p>
+                  <p className="text-[9px] font-mono text-[#3a3a3a] mt-1">
+                    Detailed error text is visible in {host}'s Syncthing Web UI.
+                  </p>
+                </div>
+                <a
+                  href={`http://127.0.0.1:8384/#folder-${folder.folderId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-white/[0.08] text-[10px] font-mono text-[#888888] hover:border-white/20 hover:text-white transition-all flex-shrink-0"
+                  title={`Open Syncthing Web UI (${host}) — only reachable from that host`}
+                >
+                  <ExternalLink size={9} /> UI
+                </a>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+
+      {/* File conflicts */}
+      <div className="flex flex-col gap-2 mt-1">
+        <p className="text-[9px] font-mono text-[#3a3a3a] uppercase tracking-wider">
+          File conflicts
         </p>
         {conflicts.length === 0 ? (
           <p className="text-xs font-mono text-[#3a3a3a] text-center py-3">
-            No pending conflicts
+            No pending file conflicts
           </p>
         ) : (
           conflicts.map((c) => (

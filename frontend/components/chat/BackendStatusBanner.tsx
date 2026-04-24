@@ -1,14 +1,15 @@
 'use client'
 
 import type { BackendConnection } from '@/hooks/useDelamainBackend'
-import { AlertTriangle, Loader2, Wifi } from 'lucide-react'
+import { AlertTriangle, Loader2, RefreshCw, Wifi } from 'lucide-react'
 
 interface Props {
   connection: BackendConnection
   authRedirectUrl?: string | null
+  onRetry?: () => void
 }
 
-export function BackendStatusBanner({ connection, authRedirectUrl }: Props) {
+export function BackendStatusBanner({ connection, authRedirectUrl, onRetry }: Props) {
   if (connection === 'connected') return null
 
   const meta = {
@@ -18,14 +19,14 @@ export function BackendStatusBanner({ connection, authRedirectUrl }: Props) {
       color: 'var(--accent-blue)',
     },
     offline: {
-      text: 'Backend unreachable — using local sample data',
+      text: 'Backend unreachable — retrying every 5s',
       icon: <AlertTriangle size={10} />,
       color: 'var(--accent-pink)',
     },
     auth_required: {
       text: authRedirectUrl
         ? 'Authentication required — sign in to continue'
-        : 'Authentication required — refresh after Cloudflare Access login',
+        : 'Authentication required — Cloudflare Access session expired',
       icon: <AlertTriangle size={10} />,
       color: 'var(--accent-purple)',
     },
@@ -48,9 +49,27 @@ export function BackendStatusBanner({ connection, authRedirectUrl }: Props) {
           onClick={() => {
             window.location.href = authRedirectUrl
           }}
-          className="px-2 py-0.5 rounded border border-current text-[10px] font-mono"
+          className="px-2 py-0.5 rounded border border-current text-[10px] font-mono hover:bg-current/10"
         >
           Sign in
+        </button>
+      ) : null}
+      {connection === 'auth_required' && !authRedirectUrl ? (
+        <button
+          onClick={() => window.location.reload()}
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-current text-[10px] font-mono hover:bg-current/10"
+        >
+          <RefreshCw size={9} />
+          Reload
+        </button>
+      ) : null}
+      {connection === 'offline' && onRetry ? (
+        <button
+          onClick={onRetry}
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-current text-[10px] font-mono hover:bg-current/10"
+        >
+          <RefreshCw size={9} />
+          Retry now
         </button>
       ) : null}
     </div>

@@ -82,11 +82,30 @@ function toToolStatus(status: string | undefined): ToolCall['status'] {
 }
 
 function toUIWorkerType(workerTypeId: string): Worker['type'] {
-  if (workerTypeId === 'opencode') return 'opencode'
-  if (workerTypeId === 'claude_code') return 'claude'
-  if (workerTypeId === 'winpc_shell') return 'winpc_shell'
-  if (workerTypeId === 'shell') return 'tmux'
-  return 'generic'
+  switch (workerTypeId) {
+    case 'opencode':
+      return 'opencode'
+    case 'claude_code':
+      return 'claude'
+    case 'codex_cli':
+      return 'codex'
+    case 'gemini_cli':
+      return 'gemini'
+    case 'winpc_shell':
+      return 'winpc_shell'
+    case 'winpc_opencode':
+      return 'winpc_opencode'
+    case 'winpc_claude_code':
+      return 'winpc_claude'
+    case 'winpc_codex_cli':
+      return 'winpc_codex'
+    case 'winpc_gemini_cli':
+      return 'winpc_gemini'
+    case 'shell':
+      return 'tmux'
+    default:
+      return 'generic'
+  }
 }
 
 function upsertToolCall(message: ChatMessage, incoming: ToolCall): ChatMessage {
@@ -119,9 +138,31 @@ export function useDelamainBackend() {
 
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
+  const [probeNonce, setProbeNonce] = useState(0)
 
   const activeConversationId = state.activeConversationId
   const connected = state.connection === 'connected'
+
+  const retryConnection = useCallback(() => {
+    setState((s) =>
+      s.connection === 'offline' || s.connection === 'auth_required'
+        ? { ...s, connection: 'probing' }
+        : s
+    )
+    setProbeNonce((n) => n + 1)
+  }, [])
+
+  // Auto-probe: while offline, quietly retry /health every 5s so the UI
+  // recovers without a manual reload when the tunnel flaps or serrano
+  // restarts. Stops as soon as a probe succeeds and connection flips.
+  useEffect(() => {
+    if (MOCK_MODE) return
+    if (state.connection !== 'offline') return
+    const handle = setInterval(() => {
+      setProbeNonce((n) => n + 1)
+    }, 5000)
+    return () => clearInterval(handle)
+  }, [state.connection])
 
   const handleBackendError = useCallback((err: unknown) => {
     if (!(err instanceof AuthRequiredError)) return false
@@ -286,7 +327,7 @@ export function useDelamainBackend() {
     return () => {
       cancelled = true
     }
-  }, [handleBackendError])
+  }, [handleBackendError, probeNonce])
 
   // ── SSE subscription on active conversation ─────────────────────────────────
   const ssePath = useMemo(() => {
@@ -994,17 +1035,18 @@ export function useDelamainBackend() {
   )
 
   const handleWorkerAction = useCallback(
-    async (workerId: string, action: 'capture' | 'summarize' | 'stop' | 'kill') => {
-      setState((s) => ({
-        ...s,
-        workers: s.workers.map((w) => {
-          if (w.id !== workerId) return w
-          if (action === 'stop' || action === 'kill') return { ...w, status: 'stopped' as const }
-          if (action === 'capture') return { ...w, status: 'capturing' as const }
-          return w
-        }),
-      }))
+    async (workerId: string, action: 'capture' | 'stop' | 'kill') => {
       if (!connected) return
+      // Optimistic: stop/kill flip to 'stopped'; capture doesn't flip so
+      // we don't reset the live-polling UI on every refresh tick.
+      if (action === 'stop' || action === 'kill') {
+        setState((s) => ({
+          ...s,
+          workers: s.workers.map((w) =>
+            w.id === workerId ? { ...w, status: 'stopped' as const } : w
+          ),
+        }))
+      }
       try {
         if (action === 'stop') await api.stopWorker(workerId)
         else if (action === 'kill') await api.killWorker(workerId)
@@ -1012,14 +1054,91 @@ export function useDelamainBackend() {
           const out = await api.getWorkerOutput(workerId, 200)
           setState((s) => ({
             ...s,
-            workers: s.workers.map((w) =>
-              w.id === workerId ? { ...w, output: out.output, status: 'idle' as const } : w
-            ),
+            workers: s.workers.map((w) => {
+              if (w.id !== workerId) return w
+              // Preserve running/stopped status; don't force 'idle'.
+              return { ...w, output: out.output }
+            }),
           }))
         }
       } catch (err) {
         handleBackendError(err)
         /* ignore */
+      }
+    },
+    [connected, handleBackendError]
+  )
+
+  // Summarize: capture pane, then spawn a new conversation titled
+  // "Worker summary: <name>" and submit a prompt against the task model.
+  // Task model currently comes from localStorage ('delamain.taskModel')
+  // falling back to the backend default. A proper persisted setting
+  // is backend work (see prompt C4).
+  const handleSummarizeWorker = useCallback(
+    async (workerId: string) => {
+      if (!connected) return
+      const worker = state.workers.find((w) => w.id === workerId)
+      if (!worker) return
+      try {
+        const cap = await api.getWorkerOutput(workerId, 500)
+        const taskModel =
+          (typeof window !== 'undefined' && window.localStorage.getItem('delamain.taskModel')) ||
+          state.defaultModel
+        const created = await api.createConversation({
+          title: `Worker summary: ${worker.name}`,
+          context_mode: 'blank_slate',
+          model_route: taskModel,
+        })
+        const uiConv = toUIConversation(created)
+        setState((s) => ({
+          ...s,
+          conversations: [uiConv, ...s.conversations],
+          activeConversationId: uiConv.id,
+          rightPanel: null,
+          blankSlate: true,
+        }))
+        const prompt =
+          `Summarize the current state of the tmux session for worker ` +
+          `"${worker.name}" (type ${worker.type}, host ${worker.host}). ` +
+          `Report: what it is doing right now, recent actions, any visible ` +
+          `errors or prompts waiting on input, and whether it looks idle or active. ` +
+          `Be concise — 5 bullet points or fewer.\n\n` +
+          `--- pane capture (last 500 lines) ---\n` +
+          (cap.output || '(empty)')
+        await api.submitPrompt(uiConv.id, {
+          content: prompt,
+          context_mode: 'blank_slate',
+          model_route: taskModel,
+        })
+      } catch (err) {
+        handleBackendError(err)
+        /* ignore */
+      }
+    },
+    [connected, handleBackendError, state.workers, state.defaultModel]
+  )
+
+  const handleRenameWorker = useCallback(
+    async (workerId: string, name: string) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      if (!connected) {
+        setState((s) => ({
+          ...s,
+          workers: s.workers.map((w) => (w.id === workerId ? { ...w, name: trimmed } : w)),
+        }))
+        return
+      }
+      try {
+        const updated = await api.patchWorker(workerId, { name: trimmed })
+        setState((s) => ({
+          ...s,
+          workers: s.workers.map((w) =>
+            w.id === workerId ? { ...toUIWorker(updated), output: w.output } : w
+          ),
+        }))
+      } catch (err) {
+        handleBackendError(err)
       }
     },
     [connected, handleBackendError]
@@ -1350,7 +1469,22 @@ export function useDelamainBackend() {
     async (runId: string) => {
       if (!connected) return
       try {
-        await api.retryRun(runId)
+        const run = await api.retryRun(runId)
+        // Retry returns a new run; keep the UI runId aligned so the next
+        // cancel/retry acts on the right run.
+        setState((s) => ({
+          ...s,
+          conversations: s.conversations.map((c) => {
+            if (c.id !== run.conversation_id) return c
+            return {
+              ...c,
+              runStatus: run.status as RunStatus,
+              messages: c.messages.map((m) =>
+                m.runId === runId ? { ...m, runId: run.id } : m
+              ),
+            }
+          }),
+        }))
       } catch (err) {
         handleBackendError(err)
         /* ignore */
@@ -1493,6 +1627,9 @@ export function useDelamainBackend() {
     handleRefreshSyncthing,
     handleResolveSyncthingConflict,
     handleToggleCopilotHardOverride,
+    handleSummarizeWorker,
+    handleRenameWorker,
+    retryConnection,
     setState,
   }
 }

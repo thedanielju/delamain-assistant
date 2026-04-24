@@ -189,7 +189,13 @@ const WORKER_TYPE_MAP: Record<string, Worker['type']> = {
   shell: 'tmux',
   opencode: 'opencode',
   claude_code: 'claude',
+  codex_cli: 'codex',
+  gemini_cli: 'gemini',
   winpc_shell: 'winpc_shell',
+  winpc_opencode: 'winpc_opencode',
+  winpc_claude_code: 'winpc_claude',
+  winpc_codex_cli: 'winpc_codex',
+  winpc_gemini_cli: 'winpc_gemini',
 }
 
 export function toUIWorker(w: BackendWorker): Worker {

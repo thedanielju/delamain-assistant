@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
   Search,
   Plus,
@@ -12,8 +12,23 @@ import {
   ChevronRight,
   Trash2,
   Pencil,
+  MoreVertical,
+  ArrowRightLeft,
+  CheckSquare,
+  Square,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { ConfirmModal } from './ConfirmModal'
 import type { Conversation, Folder } from '@/lib/types'
 
 interface SidebarProps {
@@ -117,10 +132,21 @@ export function Sidebar({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [renamingConvoId, setRenamingConvoId] = useState<string | null>(null)
+  const [convoRenameDraft, setConvoRenameDraft] = useState('')
   const [drag, setDrag] = useState<DragItem | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null) // folderId or 'root'
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [newFolderDraft, setNewFolderDraft] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<
+    | { kind: 'conversation'; id: string; name: string }
+    | { kind: 'folder'; id: string; name: string }
+    | { kind: 'bulk-conversations'; ids: string[] }
+    | null
+  >(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [lastClickedId, setLastClickedId] = useState<string | null>(null)
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false)
 
   const queryLower = searchQuery.toLowerCase()
   const filteredConversations = useMemo(
@@ -135,6 +161,77 @@ export function Sidebar({
     () => buildTree(folders, filteredConversations),
     [folders, filteredConversations]
   )
+
+  // Depth-first order of visible conversations — used by shift-click range
+  // select so the user gets the same span they visually see.
+  const visibleOrder: string[] = useMemo(() => {
+    const out: string[] = []
+    const walk = (node: TreeNode) => {
+      node.children.forEach(walk)
+      node.conversations.forEach((c) => out.push(c.id))
+    }
+    tree.forEach(walk)
+    rootConversations.forEach((c) => out.push(c.id))
+    return out
+  }, [tree, rootConversations])
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set())
+    setLastClickedId(null)
+  }, [])
+
+  const handleConversationClick = useCallback(
+    (id: string, e: React.MouseEvent) => {
+      const cmd = e.metaKey || e.ctrlKey
+      const shift = e.shiftKey
+
+      if (cmd) {
+        // Toggle selection; keep single-active behavior independent
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          if (next.has(id)) next.delete(id)
+          else next.add(id)
+          return next
+        })
+        setLastClickedId(id)
+        return
+      }
+      if (shift && lastClickedId) {
+        const a = visibleOrder.indexOf(lastClickedId)
+        const b = visibleOrder.indexOf(id)
+        if (a >= 0 && b >= 0) {
+          const [lo, hi] = a < b ? [a, b] : [b, a]
+          const range = visibleOrder.slice(lo, hi + 1)
+          setSelectedIds((prev) => {
+            const next = new Set(prev)
+            range.forEach((rid) => next.add(rid))
+            return next
+          })
+        }
+        return
+      }
+
+      // Plain click: clear multi-select and open the conversation
+      if (selectedIds.size > 0) clearSelection()
+      onSelect(id)
+      setLastClickedId(id)
+    },
+    [lastClickedId, visibleOrder, selectedIds.size, clearSelection, onSelect]
+  )
+
+  const bulkMoveTo = useCallback(
+    (folderId: string | null) => {
+      Array.from(selectedIds).forEach((id) => onMoveConversation(id, folderId))
+      setBulkMoveOpen(false)
+      clearSelection()
+    },
+    [selectedIds, onMoveConversation, clearSelection]
+  )
+
+  const executeBulkDelete = useCallback(() => {
+    Array.from(selectedIds).forEach((id) => onDeleteConversation(id))
+    clearSelection()
+  }, [selectedIds, onDeleteConversation, clearSelection])
 
   const toggleExpand = (folderId: string) => {
     setExpanded((e) => ({ ...e, [folderId]: !e[folderId] }))
@@ -156,6 +253,39 @@ export function Sidebar({
     setNewFolderDraft('')
   }
 
+  const startConvoRename = (conv: Conversation) => {
+    setRenamingConvoId(conv.id)
+    setConvoRenameDraft(conv.title)
+  }
+
+  const commitConvoRename = () => {
+    if (renamingConvoId && onRenameConversation) {
+      const name = convoRenameDraft.trim()
+      if (name) onRenameConversation(renamingConvoId, name)
+    }
+    setRenamingConvoId(null)
+    setConvoRenameDraft('')
+  }
+
+  const confirmDeleteMessage = (() => {
+    if (!confirmDelete) return ''
+    if (confirmDelete.kind === 'conversation') {
+      return `Delete conversation "${confirmDelete.name}"? Messages, runs, and events are deleted server-side and cannot be recovered.`
+    }
+    if (confirmDelete.kind === 'folder') {
+      return `Delete folder "${confirmDelete.name}"? Conversations inside move to root; child folders are re-parented to root.`
+    }
+    return `Delete ${confirmDelete.ids.length} conversation${confirmDelete.ids.length === 1 ? '' : 's'}? Messages, runs, and events for each are deleted server-side and cannot be recovered.`
+  })()
+
+  const executeConfirmDelete = () => {
+    if (!confirmDelete) return
+    if (confirmDelete.kind === 'conversation') onDeleteConversation(confirmDelete.id)
+    else if (confirmDelete.kind === 'folder') onDeleteFolder(confirmDelete.id)
+    else executeBulkDelete()
+    setConfirmDelete(null)
+  }
+
   const handleDrop = (targetFolderId: string | null) => {
     if (!drag) return
     if (drag.kind === 'conversation') {
@@ -171,10 +301,12 @@ export function Sidebar({
 
   const renderConversation = (conv: Conversation, depth: number) => {
     const isActive = conv.id === activeId
+    const isRenaming = renamingConvoId === conv.id
+    const isSelected = selectedIds.has(conv.id)
     return (
       <li key={conv.id}>
-        <button
-          draggable
+        <div
+          draggable={!isRenaming}
           onDragStart={(e) => {
             e.dataTransfer.effectAllowed = 'move'
             setDrag({ kind: 'conversation', id: conv.id })
@@ -183,57 +315,148 @@ export function Sidebar({
             setDrag(null)
             setDropTarget(null)
           }}
-          onClick={() => onSelect(conv.id)}
-          onContextMenu={(e) => {
-            e.preventDefault()
-            const action = window.prompt(
-              `Conversation: "${conv.title}"\n\nType: rename / delete / move (or empty to cancel)`,
-              ''
-            )
-            if (!action) return
-            const trimmed = action.trim().toLowerCase()
-            if (trimmed === 'rename' && onRenameConversation) {
-              const next = window.prompt('New title', conv.title)
-              if (next && next.trim()) onRenameConversation(conv.id, next.trim())
-            } else if (trimmed === 'delete') {
-              if (window.confirm(`Delete "${conv.title}"?`)) onDeleteConversation(conv.id)
-            } else if (trimmed === 'move') {
-              const options = folders.map((f) => `${f.id} — ${f.name}`).join('\n')
-              const fid = window.prompt(
-                `Move to folder id (empty = root):\n${options || '(no folders)'}`,
-                conv.folderId ?? ''
-              )
-              onMoveConversation(conv.id, fid && fid.trim() ? fid.trim() : null)
+          className={cn(
+            'relative py-2 rounded-md flex items-start gap-2 transition-colors group cursor-pointer',
+            isSelected
+              ? 'bg-accent-blue/15 border-l-2 border-accent-blue/70'
+              : isActive
+                ? 'bg-[#111111] border-l-2 border-accent-blue'
+                : 'hover:bg-[#0f0f0f] border-l-2 border-transparent'
+          )}
+          style={{ paddingLeft: 10 + depth * 12, paddingRight: 6 }}
+          onClick={(e) => {
+            if (isRenaming) return
+            handleConversationClick(conv.id, e)
+          }}
+          role="button"
+          tabIndex={0}
+          aria-selected={isSelected}
+          onKeyDown={(e) => {
+            if (isRenaming) return
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              onSelect(conv.id)
             }
           }}
-          className={cn(
-            'w-full text-left py-2 rounded-md flex items-start gap-2 transition-colors group',
-            isActive
-              ? 'bg-[#111111] border-l-2 border-accent-blue'
-              : 'hover:bg-[#0f0f0f] border-l-2 border-transparent'
-          )}
-          style={{ paddingLeft: 10 + depth * 12, paddingRight: 10 }}
           aria-current={isActive ? 'page' : undefined}
         >
-          <MessageSquare
-            size={13}
-            className={cn(
-              'mt-0.5 flex-shrink-0',
-              isActive ? 'text-accent-blue' : 'text-[#888888]'
-            )}
-          />
-          <div className="flex flex-col gap-0.5 min-w-0">
-            <span
+          {isSelected ? (
+            <CheckSquare
+              size={13}
+              className="mt-0.5 flex-shrink-0 text-accent-blue"
+            />
+          ) : selectedIds.size > 0 ? (
+            <Square
+              size={13}
+              className="mt-0.5 flex-shrink-0 text-[#555555]"
+            />
+          ) : (
+            <MessageSquare
+              size={13}
               className={cn(
-                'text-xs font-sans truncate leading-tight',
-                isActive ? 'text-white' : 'text-[#cccccc]'
+                'mt-0.5 flex-shrink-0',
+                isActive ? 'text-accent-blue' : 'text-[#888888]'
               )}
-            >
-              {conv.title}
-            </span>
+            />
+          )}
+          <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+            {isRenaming ? (
+              <input
+                autoFocus
+                value={convoRenameDraft}
+                onChange={(e) => setConvoRenameDraft(e.target.value)}
+                onBlur={commitConvoRename}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Enter') commitConvoRename()
+                  if (e.key === 'Escape') {
+                    setRenamingConvoId(null)
+                    setConvoRenameDraft('')
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="bg-[#0a0a0a] border border-white/[0.12] text-xs text-white font-sans outline-none px-1.5 py-0.5 rounded"
+              />
+            ) : (
+              <span
+                className={cn(
+                  'text-xs font-sans truncate leading-tight',
+                  isActive ? 'text-white' : 'text-[#cccccc]'
+                )}
+              >
+                {conv.title}
+              </span>
+            )}
             <span className="text-[10px] text-[#888888] font-mono">{conv.timestamp}</span>
           </div>
-        </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  'flex-shrink-0 self-start mt-0.5 p-1 rounded text-[#555555] hover:text-white hover:bg-white/[0.06] transition-colors',
+                  'opacity-0 group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100'
+                )}
+                aria-label={`Actions for ${conv.title}`}
+              >
+                <MoreVertical size={12} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="min-w-[180px] bg-[#0f0f0f] border-white/[0.08] text-[#cccccc]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DropdownMenuItem
+                onSelect={() => startConvoRename(conv)}
+                className="text-xs"
+              >
+                <Pencil size={11} /> Rename
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="text-xs">
+                  <ArrowRightLeft size={11} /> Move to…
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="min-w-[180px] bg-[#0f0f0f] border-white/[0.08] text-[#cccccc]">
+                  <DropdownMenuItem
+                    className="text-xs"
+                    onSelect={() => onMoveConversation(conv.id, null)}
+                    disabled={!conv.folderId}
+                  >
+                    <FolderIcon size={11} /> Root
+                  </DropdownMenuItem>
+                  {folders.length > 0 && <DropdownMenuSeparator />}
+                  {folders.map((f) => (
+                    <DropdownMenuItem
+                      key={f.id}
+                      className="text-xs"
+                      onSelect={() => onMoveConversation(conv.id, f.id)}
+                      disabled={conv.folderId === f.id}
+                    >
+                      <FolderIcon size={11} /> {f.name}
+                    </DropdownMenuItem>
+                  ))}
+                  {folders.length === 0 && (
+                    <div className="px-2 py-1.5 text-[10px] font-mono text-[#555555]">
+                      No folders yet
+                    </div>
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                className="text-xs"
+                onSelect={() =>
+                  setConfirmDelete({ kind: 'conversation', id: conv.id, name: conv.title })
+                }
+              >
+                <Trash2 size={11} /> Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </li>
     )
   }
@@ -248,14 +471,17 @@ export function Sidebar({
           onDragOver={(e) => {
             if (!drag) return
             e.preventDefault()
+            e.stopPropagation()
             e.dataTransfer.dropEffect = 'move'
             setDropTarget(node.folder.id)
           }}
-          onDragLeave={() => {
+          onDragLeave={(e) => {
+            e.stopPropagation()
             if (dropTarget === node.folder.id) setDropTarget(null)
           }}
           onDrop={(e) => {
             e.preventDefault()
+            e.stopPropagation()
             handleDrop(node.folder.id)
           }}
           draggable={!isRenaming}
@@ -329,9 +555,7 @@ export function Sidebar({
           <button
             onClick={(e) => {
               e.stopPropagation()
-              if (window.confirm(`Delete folder "${node.folder.name}"? Conversations inside move to root.`)) {
-                onDeleteFolder(node.folder.id)
-              }
+              setConfirmDelete({ kind: 'folder', id: node.folder.id, name: node.folder.name })
             }}
             className="text-[#555555] hover:text-accent-pink opacity-0 group-hover:opacity-100 transition-opacity p-0.5"
             aria-label="Delete folder"
@@ -412,6 +636,71 @@ export function Sidebar({
         </div>
       )}
 
+      {/* Bulk selection action bar */}
+      {selectedIds.size > 0 && (
+        <div className="mx-3 mb-2 rounded-md border border-accent-blue/40 bg-accent-blue/10 px-2 py-1.5 flex items-center gap-1.5">
+          <span className="text-[10px] font-mono text-accent-blue flex-shrink-0">
+            {selectedIds.size} selected
+          </span>
+          <div className="flex-1" />
+          <DropdownMenu open={bulkMoveOpen} onOpenChange={setBulkMoveOpen}>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-[#cccccc] hover:text-white hover:bg-white/[0.06]"
+                title="Move selected to folder"
+              >
+                <ArrowRightLeft size={10} />
+                Move
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="min-w-[180px] bg-[#0f0f0f] border-white/[0.08] text-[#cccccc]"
+            >
+              <DropdownMenuItem
+                className="text-xs"
+                onSelect={() => bulkMoveTo(null)}
+              >
+                <FolderIcon size={11} /> Root
+              </DropdownMenuItem>
+              {folders.length > 0 && <DropdownMenuSeparator />}
+              {folders.map((f) => (
+                <DropdownMenuItem
+                  key={f.id}
+                  className="text-xs"
+                  onSelect={() => bulkMoveTo(f.id)}
+                >
+                  <FolderIcon size={11} /> {f.name}
+                </DropdownMenuItem>
+              ))}
+              {folders.length === 0 && (
+                <div className="px-2 py-1.5 text-[10px] font-mono text-[#555555]">
+                  No folders yet
+                </div>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <button
+            onClick={() =>
+              setConfirmDelete({ kind: 'bulk-conversations', ids: Array.from(selectedIds) })
+            }
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-[var(--accent-pink)] hover:bg-[var(--accent-pink)]/10"
+            title="Delete selected"
+          >
+            <Trash2 size={10} />
+            Delete
+          </button>
+          <button
+            onClick={clearSelection}
+            className="inline-flex items-center p-0.5 rounded text-[#888888] hover:text-white"
+            title="Clear selection"
+            aria-label="Clear selection"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
+
       <div className="px-3 pb-2">
         {searchOpen ? (
           <div className="flex items-center gap-2 bg-[#111111] border border-white/[0.08] rounded-md px-2 py-1.5">
@@ -475,6 +764,16 @@ export function Sidebar({
           </ul>
         )}
       </nav>
+
+      {confirmDelete && (
+        <ConfirmModal
+          title={confirmDelete.kind === 'conversation' ? 'Delete conversation' : 'Delete folder'}
+          description={confirmDeleteMessage}
+          confirmLabel="Delete"
+          onConfirm={executeConfirmDelete}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </aside>
   )
 }

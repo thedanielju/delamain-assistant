@@ -3,17 +3,36 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Plus, Square, Camera, FileText, Terminal, Globe, X,
-  Maximize2, Minimize2, ChevronDown, ChevronRight, PlugZap, Cpu,
+  Maximize2, Minimize2, ChevronDown, ChevronRight, PlugZap, Cpu, Pencil,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Worker, WorkerStatus, WorkerTypeOption } from '@/lib/types'
 
 const WORKER_ICON: Record<Worker['type'], React.ReactNode> = {
-  opencode: <Cpu size={12} />,
-  claude:   <Cpu size={12} />,
-  tmux:     <Terminal size={12} />,
-  winpc_shell: <Globe size={12} />,
-  generic:  <Terminal size={12} />,
+  opencode:       <Cpu size={12} />,
+  claude:         <Cpu size={12} />,
+  codex:          <Cpu size={12} />,
+  gemini:         <Cpu size={12} />,
+  tmux:           <Terminal size={12} />,
+  winpc_shell:    <Globe size={12} />,
+  winpc_opencode: <Globe size={12} />,
+  winpc_claude:   <Globe size={12} />,
+  winpc_codex:    <Globe size={12} />,
+  winpc_gemini:   <Globe size={12} />,
+  generic:        <Terminal size={12} />,
+}
+
+const TYPE_ID_ICON: Record<string, React.ReactNode> = {
+  opencode:           WORKER_ICON.opencode,
+  claude_code:        WORKER_ICON.claude,
+  codex_cli:          WORKER_ICON.codex,
+  gemini_cli:         WORKER_ICON.gemini,
+  shell:              WORKER_ICON.tmux,
+  winpc_shell:        WORKER_ICON.winpc_shell,
+  winpc_opencode:     WORKER_ICON.winpc_opencode,
+  winpc_claude_code:  WORKER_ICON.winpc_claude,
+  winpc_codex_cli:    WORKER_ICON.winpc_codex,
+  winpc_gemini_cli:   WORKER_ICON.winpc_gemini,
 }
 
 const STATUS_COLOR: Record<WorkerStatus, string> = {
@@ -23,42 +42,43 @@ const STATUS_COLOR: Record<WorkerStatus, string> = {
   capturing: 'bg-[var(--accent-blue)]',
 }
 
-const DEMO_OUTPUT: Record<Worker['type'], string[]> = {
-  opencode: ['$ opencode', '> Starting session...'],
-  claude:   ['$ claude', '> Authenticating...', '> Session started.'],
-  tmux:     ['$ tmux new -s delamain', '[delamain] 0:bash*'],
-  winpc_shell: ['PS C:\\Users\\Daniel> wsl.exe -e tmux ls', 'dw-worker_123 (created Wed)'],
-  generic:  ['$ /bin/bash'],
-}
+const LIVE_POLL_MS = 2000
 
-// ── Terminal ─────────────────────────────────────────────────────────────────
+// ── Terminal (live-polled capture) ───────────────────────────────────────────
 
 function WorkerTerminal({
   worker,
   fullscreen,
+  onCapture,
   onToggleFullscreen,
   onClose,
 }: {
   worker: Worker
   fullscreen: boolean
+  onCapture: (id: string) => void
   onToggleFullscreen: () => void
   onClose?: () => void
 }) {
-  const [lines, setLines] = useState<string[]>(DEMO_OUTPUT[worker.type] ?? ['$ _'])
-  const [input, setInput] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const lines = worker.output
+    ? worker.output.split('\n')
+    : ['(waiting for first capture…)']
+  const live = worker.status === 'running'
 
+  // Auto-scroll on new output
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [lines])
+  }, [worker.output])
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && input.trim()) {
-      const cmd = input.trim()
-      setLines((prev) => [...prev, `$ ${cmd}`, '[output pending — backend not connected]'])
-      setInput('')
-    }
-  }
+  // Poll capture while visible + worker is running. This is the
+  // closest thing we have to a live feed until the backend adds a PTY
+  // websocket. Each poll is GET /api/workers/{id}/output?lines=200.
+  useEffect(() => {
+    if (!live) return
+    onCapture(worker.id)
+    const h = setInterval(() => onCapture(worker.id), LIVE_POLL_MS)
+    return () => clearInterval(h)
+  }, [worker.id, live, onCapture])
 
   return (
     <div
@@ -76,8 +96,21 @@ function WorkerTerminal({
           <span
             className={cn('w-1.5 h-1.5 rounded-full', STATUS_COLOR[worker.status], worker.status === 'running' && 'dot-pulse')}
           />
+          {live && (
+            <span className="text-[9px] font-mono text-[#3a3a3a]">
+              polling every {LIVE_POLL_MS / 1000}s
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => onCapture(worker.id)}
+            className="p-1 text-[#444444] hover:text-[#888888] transition-colors rounded"
+            aria-label="Refresh capture"
+            title="Refresh now"
+          >
+            <Camera size={11} />
+          </button>
           <button
             onClick={onToggleFullscreen}
             className="p-1 text-[#444444] hover:text-[#888888] transition-colors rounded"
@@ -108,7 +141,7 @@ function WorkerTerminal({
         {lines.map((line, i) => (
           <div
             key={i}
-            className={cn('whitespace-pre-wrap break-all', line.startsWith('$') && 'text-[#666666]')}
+            className="whitespace-pre-wrap break-all"
           >
             {line}
           </div>
@@ -116,25 +149,11 @@ function WorkerTerminal({
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div className="flex items-center gap-1.5 px-3 py-2 border-t border-white/[0.05] flex-shrink-0 bg-[#040404]">
-        <span className="text-[10px] font-mono text-[#3a3a3a] flex-shrink-0">$</span>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={worker.status === 'stopped' ? 'session stopped' : 'type a command…'}
-          disabled={worker.status === 'stopped'}
-          className="flex-1 bg-transparent text-[11px] font-mono text-[#cccccc] outline-none placeholder-[#333333] disabled:opacity-40"
-          aria-label="Terminal input"
-          autoComplete="off"
-          spellCheck={false}
-        />
-        {worker.status !== 'stopped' && (
-          <kbd className="text-[9px] font-mono text-[#2a2a2a] border border-[#2a2a2a] rounded px-1 flex-shrink-0">
-            Enter
-          </kbd>
-        )}
+      {/* Footer note — read-only for now */}
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-t border-white/[0.05] flex-shrink-0 bg-[#040404]">
+        <span className="text-[9px] font-mono text-[#3a3a3a]">
+          read-only · interactive PTY requires backend websocket bridge
+        </span>
       </div>
     </div>
   )
@@ -143,22 +162,27 @@ function WorkerTerminal({
 // ── Action button ─────────────────────────────────────────────────────────────
 
 function ActionBtn({
-  icon, label, onClick, accent,
+  icon, label, onClick, accent, disabled, title,
 }: {
   icon: React.ReactNode
   label: string
   onClick: () => void
   accent?: 'pink' | 'red' | 'blue'
+  disabled?: boolean
+  title?: string
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
+      title={title}
       className={cn(
         'inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-mono transition-all',
         accent === 'pink' && 'border-[var(--accent-pink)]/30 text-[var(--accent-pink)] hover:bg-[var(--accent-pink)]/10',
         accent === 'red'  && 'border-[#c04040]/40 text-[#c04040] hover:bg-[#c04040]/10',
         accent === 'blue' && 'border-[var(--accent-blue)]/30 text-[var(--accent-blue)] hover:bg-[var(--accent-blue)]/10',
-        !accent && 'border-white/[0.08] text-[#888888] hover:border-white/20 hover:text-white'
+        !accent && 'border-white/[0.08] text-[#888888] hover:border-white/20 hover:text-white',
+        disabled && 'opacity-40 cursor-not-allowed hover:!border-white/[0.08] hover:!text-[#888888]'
       )}
     >
       {icon}
@@ -175,12 +199,15 @@ interface WorkerCardProps {
   onSummarize: (id: string) => void
   onStop: (id: string) => void
   onKill: (id: string) => void
+  onRename: (id: string, name: string) => void
 }
 
-function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill }: WorkerCardProps) {
+function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill, onRename }: WorkerCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
   const [termFullscreen, setTermFullscreen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [renameDraft, setRenameDraft] = useState(worker.name)
 
   const handleToggleFullscreen = useCallback(() => {
     setTermFullscreen((v) => !v)
@@ -191,12 +218,18 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill }: WorkerCa
     setTermFullscreen(false)
   }, [])
 
+  const commitRename = () => {
+    const v = renameDraft.trim()
+    if (v && v !== worker.name) onRename(worker.id, v)
+    setRenaming(false)
+  }
+
   return (
     <div className="rounded-xl border border-white/[0.07] bg-[#0d0d0d] overflow-hidden">
       {/* Header row */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-white/[0.02] transition-colors text-left"
+      <div
+        className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-white/[0.02] transition-colors cursor-pointer group"
+        onClick={() => !renaming && setExpanded((v) => !v)}
       >
         <span
           className={cn(
@@ -209,29 +242,73 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill }: WorkerCa
           {WORKER_ICON[worker.type]}
         </span>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-mono text-[#cccccc] truncate">{worker.name}</p>
+          {renaming ? (
+            <input
+              autoFocus
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Enter') commitRename()
+                if (e.key === 'Escape') {
+                  setRenaming(false)
+                  setRenameDraft(worker.name)
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full bg-[#0a0a0a] border border-white/[0.12] text-xs font-mono text-white outline-none px-1.5 py-0.5 rounded"
+            />
+          ) : (
+            <p className="text-xs font-mono text-[#cccccc] truncate">{worker.name}</p>
+          )}
           <p className="text-[9px] font-mono text-[#444444]">
-            {worker.host} &middot; {worker.status}
+            {worker.host} &middot; {worker.status} &middot; {worker.type}
             {worker.lastActivity ? ` · ${worker.lastActivity}` : ''}
           </p>
         </div>
+        {!renaming && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              setRenameDraft(worker.name)
+              setRenaming(true)
+            }}
+            className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 text-[#555555] hover:text-white"
+            aria-label={`Rename ${worker.name}`}
+            title="Rename worker"
+          >
+            <Pencil size={11} />
+          </button>
+        )}
         {expanded
           ? <ChevronDown size={10} className="text-[#444444] flex-shrink-0" />
           : <ChevronRight size={10} className="text-[#444444] flex-shrink-0" />
         }
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-white/[0.05]">
           {/* Action row */}
           <div className="flex items-center gap-1.5 flex-wrap px-3 py-2.5">
-            <ActionBtn icon={<Camera size={10} />} label="Capture" onClick={() => onCapture(worker.id)} />
-            <ActionBtn icon={<FileText size={10} />} label="Summarize" onClick={() => onSummarize(worker.id)} />
+            <ActionBtn
+              icon={<Camera size={10} />}
+              label="Capture"
+              onClick={() => onCapture(worker.id)}
+              title="One-shot: fetch last 200 lines of tmux pane"
+            />
+            <ActionBtn
+              icon={<FileText size={10} />}
+              label="Summarize"
+              onClick={() => onSummarize(worker.id)}
+              title="Capture current pane, then ask the task model for a summary in a new conversation"
+            />
             <ActionBtn
               icon={<PlugZap size={10} />}
-              label={showTerminal ? 'Hide' : 'Terminal'}
+              label={showTerminal ? 'Hide pane' : 'Live pane'}
               onClick={() => setShowTerminal((v) => !v)}
               accent="blue"
+              title="Live-poll the tmux pane (read-only until PTY bridge exists)"
             />
             {worker.status === 'running' && (
               <ActionBtn icon={<Square size={10} />} label="Stop" onClick={() => onStop(worker.id)} accent="pink" />
@@ -239,11 +316,12 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill }: WorkerCa
             <ActionBtn icon={<X size={10} />} label="Kill" onClick={() => onKill(worker.id)} accent="red" />
           </div>
 
-          {/* Inline terminal */}
+          {/* Inline live pane */}
           {showTerminal && !termFullscreen && (
             <WorkerTerminal
               worker={worker}
               fullscreen={false}
+              onCapture={onCapture}
               onToggleFullscreen={handleToggleFullscreen}
               onClose={handleCloseTerminal}
             />
@@ -251,11 +329,12 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill }: WorkerCa
         </div>
       )}
 
-      {/* Fullscreen terminal — portal-like overlay */}
+      {/* Fullscreen pane */}
       {showTerminal && termFullscreen && (
         <WorkerTerminal
           worker={worker}
           fullscreen={true}
+          onCapture={onCapture}
           onToggleFullscreen={handleToggleFullscreen}
           onClose={handleCloseTerminal}
         />
@@ -269,11 +348,20 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill }: WorkerCa
 interface WorkersPanelProps {
   workers: Worker[]
   workerTypeOptions: WorkerTypeOption[]
-  onAction: (workerId: string, action: 'capture' | 'summarize' | 'stop' | 'kill') => void
+  onAction: (workerId: string, action: 'capture' | 'stop' | 'kill') => void
+  onSummarize: (workerId: string) => void
+  onRename: (workerId: string, name: string) => void
   onStartWorker: (workerTypeId: string) => void
 }
 
-export function WorkersPanel({ workers, workerTypeOptions, onAction, onStartWorker }: WorkersPanelProps) {
+export function WorkersPanel({
+  workers,
+  workerTypeOptions,
+  onAction,
+  onSummarize,
+  onRename,
+  onStartWorker,
+}: WorkersPanelProps) {
   const [showPresets, setShowPresets] = useState(false)
   const presetRef = useRef<HTMLDivElement>(null)
 
@@ -288,6 +376,14 @@ export function WorkersPanel({ workers, workerTypeOptions, onAction, onStartWork
     return () => document.removeEventListener('mousedown', handler)
   }, [showPresets])
 
+  // Group by host for easier scanning (serrano vs winpc)
+  const grouped = workerTypeOptions.reduce<Record<string, WorkerTypeOption[]>>((acc, opt) => {
+    const key = opt.host || 'local'
+    acc[key] = acc[key] ?? []
+    acc[key].push(opt)
+    return acc
+  }, {})
+
   return (
     <div className="flex flex-col gap-3 p-4">
       {/* Start new session */}
@@ -301,18 +397,30 @@ export function WorkersPanel({ workers, workerTypeOptions, onAction, onStartWork
         </button>
         {showPresets && (
           <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-[#111111] border border-white/[0.1] rounded-xl overflow-hidden shadow-2xl">
-            {workerTypeOptions.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => { onStartWorker(p.id); setShowPresets(false) }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-mono text-[#888888] hover:bg-white/[0.04] hover:text-white transition-colors"
-              >
-                <span style={{ color: 'var(--accent-blue)' }}>
-                  {p.id === 'opencode' ? WORKER_ICON.opencode : p.id === 'claude_code' ? WORKER_ICON.claude : p.id === 'winpc_shell' ? WORKER_ICON.winpc_shell : WORKER_ICON.tmux}
-                </span>
-                {p.label} <span className="text-[10px] text-[#444444]">({p.host})</span>
-              </button>
+            {Object.entries(grouped).map(([host, opts]) => (
+              <div key={host}>
+                <div className="px-3 py-1.5 text-[9px] font-mono text-[#3a3a3a] uppercase tracking-wider bg-[#080808] border-b border-white/[0.04]">
+                  {host}
+                </div>
+                {opts.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => { onStartWorker(p.id); setShowPresets(false) }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-mono text-[#888888] hover:bg-white/[0.04] hover:text-white transition-colors"
+                  >
+                    <span style={{ color: 'var(--accent-blue)' }}>
+                      {TYPE_ID_ICON[p.id] ?? WORKER_ICON.generic}
+                    </span>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             ))}
+            {workerTypeOptions.length === 0 && (
+              <div className="px-3 py-2.5 text-xs font-mono text-[#555555]">
+                No worker types available
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -327,16 +435,18 @@ export function WorkersPanel({ workers, workerTypeOptions, onAction, onStartWork
               key={w.id}
               worker={w}
               onCapture={(id) => onAction(id, 'capture')}
-              onSummarize={(id) => onAction(id, 'summarize')}
+              onSummarize={onSummarize}
               onStop={(id) => onAction(id, 'stop')}
               onKill={(id) => onAction(id, 'kill')}
+              onRename={onRename}
             />
           ))}
         </div>
       )}
 
       <p className="text-[9px] font-mono text-[#2a2a2a] mt-1 leading-relaxed">
-        Workers are for deep coding/research/admin jobs &mdash; not Q&amp;A, health checks, or vault indexing.
+        Workers are persistent tmux sessions for deep coding/research/admin jobs. They survive browser disconnects.
+        Kill destroys the tmux session; Stop tries Ctrl-C then exit.
       </p>
     </div>
   )

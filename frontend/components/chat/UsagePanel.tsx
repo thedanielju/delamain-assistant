@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { RefreshCw, DollarSign } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Progress } from '@/components/ui/progress'
@@ -72,6 +72,22 @@ function unitLabel(unit: UsageProviderSummary['unit']): string {
   return ''
 }
 
+function humanPeriod(period: string | null | undefined): string {
+  if (!period) return '—'
+  switch (period) {
+    case 'current_month_utc':
+      return 'this month · UTC'
+    case 'current_month':
+      return 'this month'
+    case 'all_time':
+      return 'all time'
+    case 'last_24h':
+      return 'last 24h'
+    default:
+      return period.replace(/_/g, ' ')
+  }
+}
+
 // ── cards ─────────────────────────────────────────────────────────────────────
 
 function UsageProviderCard({ provider }: { provider: UsageProviderSummary }) {
@@ -91,7 +107,7 @@ function UsageProviderCard({ provider }: { provider: UsageProviderSummary }) {
       </div>
 
       <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] font-mono text-[#888888]">
-        <span className="truncate">{provider.period || '—'}</span>
+        <span className="truncate">{humanPeriod(provider.period)}</span>
         <span className="text-[#cccccc] flex-shrink-0">{formatUsed(provider)}</span>
       </div>
 
@@ -187,6 +203,14 @@ interface UsagePanelProps {
 export function UsagePanel({ usageProviders, subscriptions, onRefresh }: UsagePanelProps) {
   const [refreshing, setRefreshing] = useState(false)
   const [refreshingSubs, setRefreshingSubs] = useState(false)
+
+  // Auto-refresh usage (not subscription probes, which are rate-limited)
+  // every 2 minutes while the panel is mounted. Billing APIs move slowly;
+  // polling faster just wastes OpenRouter/Anthropic/OpenAI requests.
+  useEffect(() => {
+    const h = setInterval(() => onRefresh({}), 120_000)
+    return () => clearInterval(h)
+  }, [onRefresh])
 
   const handleRefresh = () => {
     setRefreshing(true)

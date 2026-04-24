@@ -333,6 +333,12 @@ export const api = {
   getWorker(id: string, refresh = false): Promise<BackendWorker> {
     return request<BackendWorker>(`/workers/${id}${refresh ? '?refresh=true' : ''}`)
   },
+  patchWorker(id: string, body: { name: string }): Promise<BackendWorker> {
+    return request<BackendWorker>(`/workers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+  },
   stopWorker(id: string): Promise<BackendWorker> {
     return request<BackendWorker>(`/workers/${id}/stop`, { method: 'POST' })
   },
@@ -356,6 +362,38 @@ export const api = {
   getSubscriptions(refresh = false): Promise<BackendSubscriptionSummary> {
     return request<BackendSubscriptionSummary>(
       `/usage/subscriptions${refresh ? '?refresh=true' : ''}`
+    )
+  },
+
+  // ── Vault index (Prompt D — may 404 until backend lands it) ───────────────
+  getVaultGraph(params: { folder?: string; tag?: string; limit?: number } = {}) {
+    const q = new URLSearchParams()
+    if (params.folder) q.set('folder', params.folder)
+    if (params.tag) q.set('tag', params.tag)
+    if (params.limit != null) q.set('limit', String(params.limit))
+    const suffix = q.toString() ? `?${q.toString()}` : ''
+    return request<import('./types').VaultGraph>(`/vault/graph${suffix}`)
+  },
+  getVaultNote(path: string) {
+    return request<import('./types').VaultNoteDetail>(
+      `/vault/note?path=${encodeURIComponent(path)}`
+    )
+  },
+  listConversationContextPins(conversationId: string) {
+    return request<{ paths: string[] }>(
+      `/conversations/${conversationId}/context/pins`
+    )
+  },
+  pinContext(conversationId: string, paths: string[]) {
+    return request(`/conversations/${conversationId}/context/pin`, {
+      method: 'POST',
+      body: JSON.stringify({ paths }),
+    })
+  },
+  unpinContext(conversationId: string, path: string) {
+    return request(
+      `/conversations/${conversationId}/context/pin?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' }
     )
   },
 
