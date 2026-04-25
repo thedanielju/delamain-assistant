@@ -103,5 +103,45 @@ def default_worker_registry(config: AppConfig) -> WorkerTypeRegistry:
                 host="winpc",
                 cwd=Path("/home/daniel"),
             ),
+            WorkerType(
+                id="winpc_opencode",
+                label="WinPC OpenCode",
+                description="Start an OpenCode agent session in WSL tmux on winpc.",
+                command_template=(
+                    "/home/daniel/.local/bin/opencode",
+                ),
+                host="winpc",
+                cwd=Path("/home/daniel"),
+            ),
+            WorkerType(
+                id="winpc_claude_code",
+                label="WinPC Claude Code",
+                description="Start a Claude Code agent session in WSL tmux on winpc with permissions bypassed.",
+                command_template=(
+                    "claude", "--dangerously-skip-permissions",
+                ),
+                host="winpc",
+                cwd=Path("/home/daniel"),
+            ),
+            WorkerType(
+                id="winpc_codex_cli",
+                label="WinPC Codex CLI",
+                description="Start a Codex CLI agent session in WSL tmux on winpc in YOLO mode.",
+                command_template=(
+                    "/home/daniel/.local/bin/codex-wsl", "--yolo",
+                ),
+                host="winpc",
+                cwd=Path("/home/daniel"),
+            ),
+            WorkerType(
+                id="winpc_gemini_cli",
+                label="WinPC Gemini CLI",
+                description="Start a Gemini CLI agent session in WSL tmux on winpc in YOLO mode.",
+                command_template=(
+                    "gemini", "--yolo",
+                ),
+                host="winpc",
+                cwd=Path("/home/daniel"),
+            ),
         ]
     )

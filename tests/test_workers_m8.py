@@ -82,13 +82,37 @@ def test_list_worker_types(test_config):
         resp = client.get("/api/workers/types")
         assert resp.status_code == 200
         types = resp.json()["types"]
-        type_ids = [t["id"] for t in types]
-        assert "shell" in type_ids
-        assert "opencode" in type_ids
-        assert "claude_code" in type_ids
-        assert "codex_cli" in type_ids
-        assert "gemini_cli" in type_ids
-        assert "winpc_shell" in type_ids
+        types_by_id = {worker_type["id"]: worker_type for worker_type in types}
+        assert "shell" in types_by_id
+        assert "opencode" in types_by_id
+        assert "claude_code" in types_by_id
+        assert "codex_cli" in types_by_id
+        assert "gemini_cli" in types_by_id
+        assert "winpc_shell" in types_by_id
+        assert "winpc_opencode" in types_by_id
+        assert "winpc_claude_code" in types_by_id
+        assert "winpc_codex_cli" in types_by_id
+        assert "winpc_gemini_cli" in types_by_id
+
+        assert types_by_id["winpc_opencode"]["host"] == "winpc"
+        assert types_by_id["winpc_opencode"]["command_template"] == [
+            "/home/daniel/.local/bin/opencode"
+        ]
+        assert types_by_id["winpc_claude_code"]["host"] == "winpc"
+        assert types_by_id["winpc_claude_code"]["command_template"] == [
+            "claude",
+            "--dangerously-skip-permissions",
+        ]
+        assert types_by_id["winpc_codex_cli"]["host"] == "winpc"
+        assert types_by_id["winpc_codex_cli"]["command_template"] == [
+            "/home/daniel/.local/bin/codex-wsl",
+            "--yolo",
+        ]
+        assert types_by_id["winpc_gemini_cli"]["host"] == "winpc"
+        assert types_by_id["winpc_gemini_cli"]["command_template"] == [
+            "gemini",
+            "--yolo",
+        ]
 
 
 def test_start_shell_worker_and_lifecycle(test_config, shell_worker_registry, tmp_path):
