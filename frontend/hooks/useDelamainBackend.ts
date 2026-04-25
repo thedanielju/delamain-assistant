@@ -509,6 +509,7 @@ export function useDelamainBackend() {
         case 'tool.started': {
           const toolCallId = payload.tool_call_id as string | undefined
           const toolName = payload.tool as string | undefined
+          const assistantMessageId = payload.assistant_message_id as string | undefined
           if (!toolCallId || !toolName) break
           const toolCall: ToolCall = {
             id: toolCallId,
@@ -523,13 +524,17 @@ export function useDelamainBackend() {
             ...s,
             conversations: s.conversations.map((c) => {
               if (c.id !== convoId) return c
-              const targetIndex = [...c.messages]
-                .map((m, idx) => ({ m, idx }))
-                .reverse()
-                .find(({ m }) => m.role === 'assistant')?.idx
+              const foundIndex = assistantMessageId
+                ? c.messages.findIndex((m) => m.id === assistantMessageId)
+                : [...c.messages]
+                    .map((m, idx) => ({ m, idx }))
+                    .reverse()
+                    .find(({ m }) => m.role === 'assistant')?.idx
+              const targetIndex =
+                typeof foundIndex === 'number' && foundIndex >= 0 ? foundIndex : undefined
               if (targetIndex === undefined) {
                 const synthetic: ChatMessage = {
-                  id: `assistant-${runIdFromPayload ?? toolCallId}`,
+                  id: assistantMessageId ?? `assistant-${runIdFromPayload ?? toolCallId}`,
                   role: 'assistant',
                   content: '',
                   streaming: true,

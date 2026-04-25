@@ -154,3 +154,29 @@ def test_formats_tool_loop_messages_for_responses_api():
         "call_id": "call_1",
         "output": "noon",
     }
+
+
+def test_formats_responses_api_preserves_assistant_text_with_tool_call():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "I will check that.",
+            "tool_calls": [{"id": "call_1", "name": "get_now", "arguments": {}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "noon"},
+    ]
+
+    formatted = format_messages_for_api_family(messages, "responses")
+
+    assert formatted[0] == {"role": "assistant", "content": "I will check that."}
+    assert formatted[1] == {
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "get_now",
+        "arguments": "{}",
+    }
+    assert formatted[2] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": "noon",
+    }

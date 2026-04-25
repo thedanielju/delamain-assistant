@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import multiprocessing
+import queue as queue_module
 import uuid
 from typing import Any, Protocol
 
@@ -140,7 +141,12 @@ def _run_litellm_process_sync(
         raise ModelCallError(f"Model route timed out after {timeout_seconds}s: {model_route}")
     if queue.empty():
         raise ModelCallError(f"Model route exited without a response: {model_route}")
-    status, payload = queue.get()
+    try:
+        status, payload = queue.get(timeout=5)
+    except queue_module.Empty as exc:
+        raise ModelCallError(
+            f"Model route exited before response payload was available: {model_route}"
+        ) from exc
     if status == "error":
         raise ModelCallError(str(payload))
     return payload
@@ -261,7 +267,11 @@ def _format_chat_message(message: dict[str, Any]) -> dict[str, Any]:
 def _format_response_message(message: dict[str, Any]) -> dict[str, Any] | list[dict[str, Any]]:
     role = message.get("role")
     if role == "assistant" and message.get("tool_calls"):
-        return [
+        formatted: list[dict[str, Any]] = []
+        content = str(message.get("content") or "")
+        if content:
+            formatted.append({"role": "assistant", "content": content})
+        formatted.extend(
             {
                 "type": "function_call",
                 "call_id": call["id"],
@@ -269,7 +279,8 @@ def _format_response_message(message: dict[str, Any]) -> dict[str, Any] | list[d
                 "arguments": json.dumps(call.get("arguments") or {}, sort_keys=True),
             }
             for call in message["tool_calls"]
-        ]
+        )
+        return formatted
     if role == "tool":
         return {
             "type": "function_call_output",

@@ -40,6 +40,24 @@ class ToolCallModelClient:
         }
 
 
+class RepeatingToolCallModelClient:
+    def __init__(self, tool_call):
+        self.tool_call = tool_call
+        self.calls = 0
+
+    async def complete(self, *, model_route, messages, tools=None):
+        self.calls += 1
+        return {
+            "id": f"tool_request_{self.calls}",
+            "model": model_route,
+            "api_family": "responses",
+            "text": "",
+            "tool_calls": [self.tool_call],
+            "usage": None,
+            "raw": {},
+        }
+
+
 @pytest.fixture
 def m4_config(test_config, tmp_path):
     vault = tmp_path / "Vault"
@@ -362,6 +380,41 @@ def test_cancel_waiting_approval_resolves_permission_and_stays_cancelled(m4_conf
     assert json.loads(permission_event[0])["resolver"] == "system"
     assert tool_call[0] == "cancelled"
     assert "awaiting approval" in tool_call[1]
+
+
+def test_tool_loop_allows_final_no_tool_response_after_max_tool_rounds(m4_config):
+    call = {
+        "id": "call_now",
+        "name": "get_now",
+        "arguments": {},
+        "source_api_family": "responses",
+        "raw": {},
+    }
+    limited = replace(
+        m4_config,
+        tools=replace(m4_config.tools, max_tool_iterations=1),
+    )
+    model_client = RepeatingToolCallModelClient(call)
+    app = create_app(limited, model_client=model_client)
+    with TestClient(app) as client:
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        run_id = client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "repeat tool forever"},
+        ).json()["run_id"]
+        run = _wait_for_run(client, run_id)
+
+    assert run["status"] == "failed"
+    assert run["error_code"] == "MAX_TOOL_ITERATIONS"
+    assert model_client.calls == 2
+
+    con = sqlite3.connect(limited.database.path)
+    tool_call_count = con.execute(
+        "SELECT COUNT(*) FROM tool_calls WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()[0]
+    con.close()
+    assert tool_call_count == 1
 
 
 def test_model_cannot_unlock_sensitive_by_tool_call(m4_config):

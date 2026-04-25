@@ -68,6 +68,15 @@ def test_startup_marks_running_runs_interrupted(test_config):
         assert rows[0]["error_code"] == "RUN_INTERRUPTED"
 
 
+def test_startup_marks_waiting_approval_runs_interrupted(test_config):
+    _seed_running_run(test_config.database.path, status="waiting_approval")
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        rows = client.get("/api/conversations/conv_existing/runs").json()
+        assert rows[0]["status"] == "interrupted"
+        assert rows[0]["error_code"] == "RUN_INTERRUPTED_AWAITING_APPROVAL"
+
+
 def test_one_active_run_per_conversation_queueing(test_config):
     app = create_app(test_config, model_client=SlowModelClient())
     with TestClient(app) as client:
@@ -304,7 +313,7 @@ async def test_database_healthcheck_does_not_accumulate_temp_rows(test_config):
     assert row is None
 
 
-def _seed_running_run(path):
+def _seed_running_run(path, status="running"):
     con = sqlite3.connect(path)
     con.execute(
         """
@@ -361,8 +370,9 @@ def _seed_running_run(path):
     con.execute(
         """
         INSERT INTO runs(id, conversation_id, user_message_id, status, context_mode, model_route)
-        VALUES ('run_existing', 'conv_existing', 'msg_existing', 'running', 'normal', 'github_copilot/gpt-5.4-mini')
-        """
+        VALUES ('run_existing', 'conv_existing', 'msg_existing', ?, 'normal', 'github_copilot/gpt-5.4-mini')
+        """,
+        (status,),
     )
     con.commit()
     con.close()

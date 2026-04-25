@@ -9,12 +9,13 @@ from delamain_backend.budget import copilot_budget_status
 from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
 from delamain_backend.dependencies import assert_litellm_version_allowed, get_litellm_version
+from delamain_backend.schemas import HealthOut
 from delamain_backend.system_status import system_status
 
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health")
+@router.get("/health", response_model=HealthOut)
 async def health(config: AppConfig = Depends(get_config), db: Database = Depends(get_db)):
     litellm_version = get_litellm_version()
     litellm_allowed = True

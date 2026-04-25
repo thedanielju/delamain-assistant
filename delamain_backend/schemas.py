@@ -132,3 +132,4 @@ class HealthOut(BaseModel):
     config: dict[str, Any]
     budget: dict[str, Any] | None = None
     helpers: dict[str, Any]
+    system: dict[str, Any] | None = None

@@ -61,6 +61,7 @@ def create_app(config: AppConfig | None = None, model_client: ModelClient | None
         try:
             yield
         finally:
+            await run_manager.shutdown()
             app.state.event_reaper_task.cancel()
             try:
                 await app.state.event_reaper_task

@@ -10,7 +10,7 @@ from typing import Any
 from delamain_backend.agent.context import load_context_for_run
 from delamain_backend.agent.litellm_client import LiteLLMModelClient, ModelClient, StubModelClient
 from delamain_backend.agent.router import api_family_for_route, fallback_chain
-from delamain_backend.agent.tool_loop import MaxToolIterationsExceeded
+from delamain_backend.agent.tool_loop import MaxToolIterationsExceeded, check_tool_iteration
 from delamain_backend.budget import copilot_budget_status, is_copilot_route
 from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
@@ -61,6 +61,31 @@ class RunManager:
             WHERE status = 'running'
             """
         )
+        await self.db.execute(
+            """
+            UPDATE runs
+            SET status = 'interrupted',
+                error_code = 'RUN_INTERRUPTED_AWAITING_APPROVAL',
+                error_message = 'Backend restarted while run was awaiting approval',
+                completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE status = 'waiting_approval'
+            """
+        )
+        await self.db.execute(
+            """
+            UPDATE permissions
+            SET status = 'resolved',
+                decision = 'denied',
+                resolver = 'system',
+                note = 'Backend restarted while awaiting approval',
+                resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE status = 'pending'
+              AND run_id IN (
+                SELECT id FROM runs
+                WHERE error_code = 'RUN_INTERRUPTED_AWAITING_APPROVAL'
+              )
+            """
+        )
         queued = await self.db.fetchall("SELECT id FROM runs WHERE status = 'queued'")
         for row in queued:
             self.enqueue(row["id"])
@@ -69,6 +94,14 @@ class RunManager:
         task = asyncio.create_task(self.process_run(run_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def shutdown(self) -> None:
+        tasks = list(self._tasks)
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def process_run(self, run_id: str) -> None:
         run = await self.db.fetchone("SELECT * FROM runs WHERE id = ?", (run_id,))
@@ -176,6 +209,14 @@ class RunManager:
         except _RunCancelled:
             await self._mark_assistant_message_cancelled(assistant_message_id)
             return
+        except asyncio.CancelledError:
+            await self._interrupt_run(
+                run,
+                code="RUN_INTERRUPTED",
+                message="Backend shut down while run was in progress",
+                assistant_message_id=assistant_message_id,
+            )
+            raise
         except Exception as exc:
             await self._fail_run(run, exc, assistant_message_id)
 
@@ -203,6 +244,7 @@ class RunManager:
     ) -> str:
         text_parts: list[str] = []
         max_iterations = self.config.tools.max_tool_iterations
+        # Allow max_iterations tool-call rounds, followed by one final no-tool model response.
         for iteration in range(max_iterations + 1):
             if await self._run_is_cancelled(run["id"]):
                 return "".join(text_parts) or "Cancelled."
@@ -220,10 +262,7 @@ class RunManager:
             tool_calls = model_result.get("tool_calls") or []
             if not tool_calls:
                 return "".join(text_parts) or "Completed without assistant text."
-            if iteration >= max_iterations:
-                raise MaxToolIterationsExceeded(
-                    f"Tool iteration limit reached: {max_iterations}"
-                )
+            check_tool_iteration(iteration, max_iterations)
 
             messages.append({"role": "assistant", "content": text, "tool_calls": tool_calls})
             for call in tool_calls:
@@ -898,6 +937,31 @@ class RunManager:
             event_type="run.completed",
             payload={"run_id": run["id"], "status": "failed"},
         )
+
+    async def _interrupt_run(
+        self,
+        run: dict[str, Any],
+        *,
+        code: str,
+        message: str,
+        assistant_message_id: str | None,
+    ) -> None:
+        await self.db.execute(
+            """
+            UPDATE runs
+            SET status = 'interrupted',
+                error_code = ?,
+                error_message = ?,
+                completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (code, message, run["id"]),
+        )
+        if assistant_message_id:
+            await self.db.execute(
+                "UPDATE messages SET status = 'interrupted', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+                (assistant_message_id,),
+            )
 
 
 def _chunks(text: str, size: int) -> list[str]:

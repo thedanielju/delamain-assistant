@@ -304,6 +304,58 @@ def test_winpc_worker_uses_ssh_wsl_tmux_adapter(test_config, shell_worker_regist
         )
 
 
+def test_local_worker_tmux_new_session_sets_initial_cwd(
+    test_config,
+    shell_worker_registry,
+    tmp_path,
+    monkeypatch,
+):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProc()
+
+    from delamain_backend.workers.manager import WorkerManager
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    with TestClient(app):
+        loop = _event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        wtype = shell_worker_registry.get("test_shell")
+        assert wtype is not None
+        loop.run_until_complete(
+            mgr._start_session_process(wtype, "dw-worker_test", str(tmp_path))
+        )
+
+    args, kwargs = calls[0]
+    assert args[:6] == (
+        "/usr/bin/tmux",
+        "-S",
+        str(socket_path),
+        "new-session",
+        "-d",
+        "-s",
+    )
+    assert args[6:10] == ("dw-worker_test", "-c", str(tmp_path), "-x")
+    assert kwargs["cwd"] == str(tmp_path)
+
+
 @tmux_required
 def test_stop_already_stopped_rejected(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"

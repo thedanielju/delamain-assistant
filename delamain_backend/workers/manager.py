@@ -500,6 +500,7 @@ class WorkerManager:
             "new-session",
             "-d",
             "-s", session_name,
+            "-c", cwd,
             "-x", "200",
             "-y", "50",
             *wtype.command_template,

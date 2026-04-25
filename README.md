@@ -180,6 +180,12 @@ Important runtime locations:
 - SSE streaming with replay support via `Last-Event-ID`
 - cancel and retry controls
 
+SSE runtime verification note: the backend already emits comment keepalives on idle streams.
+Before adding an HTTP `Connection: keep-alive` response header, verify the need behind the
+current Cloudflare Tunnel/nginx path by opening `https://term.danielju.com/api/conversations/<id>/stream`,
+confirming replay with `Last-Event-ID`, and checking whether idle streams remain open through at
+least two backend keepalive intervals without proxy buffering or premature close.
+
 ### Vault and Context Handling
 
 - normal and blank-slate context modes

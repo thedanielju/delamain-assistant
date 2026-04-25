@@ -15,6 +15,15 @@ def test_gpt_54_mini_route_is_case_and_whitespace_insensitive():
     assert api_family_for_route("github_copilot/GPT-5.4-mini") == "responses"
 
 
+def test_empty_route_is_rejected():
+    try:
+        api_family_for_route("")
+    except ValueError as exc:
+        assert str(exc) == "model_route is required"
+        return
+    raise AssertionError("expected ValueError for empty model route")
+
+
 def test_fallback_chain_records_explicit_fallbacks():
     attempts = fallback_chain(
         requested_route="github_copilot/gpt-5.4-mini",

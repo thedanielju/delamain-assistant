@@ -7,6 +7,8 @@ RESPONSES_ONLY_ROUTE = "github_copilot/gpt-5.4-mini"
 
 def api_family_for_route(model_route: str) -> str:
     normalized_route = str(model_route or "").strip().lower()
+    if not normalized_route:
+        raise ValueError("model_route is required")
     if normalized_route == RESPONSES_ONLY_ROUTE:
         return "responses"
     return "chat_completions"
