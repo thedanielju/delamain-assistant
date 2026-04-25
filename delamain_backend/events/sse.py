@@ -32,6 +32,10 @@ async def stream_events(
         header = request.headers.get("last-event-id")
         if header and header.isdigit():
             last_event_id = int(header)
+    if last_event_id is None:
+        query_value = request.query_params.get("last_event_id")
+        if query_value and query_value.isdigit():
+            last_event_id = int(query_value)
     last_event_id = last_event_id or 0
 
     if conversation_id is not None:

@@ -10,7 +10,7 @@ import {
   MemoryStick,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { HealthEntry, HealthStatus, SyncthingDevice } from '@/lib/types'
+import type { HealthEntry, HealthStatus, HealthSystemMetrics, SyncthingDevice } from '@/lib/types'
 
 const STATUS_DOT: Record<HealthStatus, string> = {
   ok: 'bg-[var(--accent-green)]',
@@ -122,38 +122,166 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   )
 }
 
-// Placeholder card for system metrics that the backend will expose via
-// Prompt E. When the field starts appearing in /api/health we'll populate.
-function SystemMetricsPlaceholder() {
+function formatBytes(mb: number): string {
+  if (!Number.isFinite(mb)) return 'unknown'
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
+  return `${Math.round(mb)} MB`
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return 'unknown'
+  return `${Math.round(value)}%`
+}
+
+function formatUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return 'unknown'
+  const totalMinutes = Math.floor(seconds / 60)
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
+}
+
+function metricTone(status: 'ok' | 'warn' | 'error') {
+  if (status === 'error') {
+    return {
+      border: 'border-[var(--accent-pink)]/25',
+      icon: 'text-[var(--accent-pink)]',
+      value: 'text-[var(--accent-pink)]',
+    }
+  }
+  if (status === 'warn') {
+    return {
+      border: 'border-[var(--accent-blue)]/20',
+      icon: 'text-[var(--accent-blue)]',
+      value: 'text-[var(--accent-blue)]',
+    }
+  }
+  return {
+    border: 'border-white/[0.04]',
+    icon: 'text-[#555555]',
+    value: 'text-[#cccccc]',
+  }
+}
+
+function MetricCard({
+  icon,
+  label,
+  value,
+  detail,
+  status = 'ok',
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  detail: string
+  status?: 'ok' | 'warn' | 'error'
+}) {
+  const tone = metricTone(status)
+  return (
+    <div className={cn('rounded-md bg-[#0a0a0a] border px-2 py-2 flex flex-col gap-1 min-w-0', tone.border)}>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className={cn('flex-shrink-0', tone.icon)}>{icon}</span>
+        <span className="text-[9px] font-mono text-[#3a3a3a] uppercase">{label}</span>
+      </div>
+      <span className={cn('text-[11px] font-mono leading-tight', tone.value)}>{value}</span>
+      <span className="text-[9px] font-mono text-[#4a4a4a] leading-tight break-words">{detail}</span>
+    </div>
+  )
+}
+
+function SystemMetricsCard({ system }: { system: HealthSystemMetrics | null }) {
+  if (!system) {
+    return (
+      <div className="rounded-xl border border-white/[0.07] bg-[#0d0d0d] p-3 flex flex-col gap-2">
+        <div className="grid grid-cols-3 gap-2">
+          <MetricCard icon={<MemoryStick size={12} />} label="memory" value="missing" detail="/api/health.system" />
+          <MetricCard icon={<Cpu size={12} />} label="backend" value="missing" detail="process metrics" />
+          <MetricCard icon={<HardDrive size={12} />} label="disk" value="missing" detail="host disks" />
+        </div>
+        <p className="text-[9px] font-mono text-[#3a3a3a] leading-relaxed">
+          The backend did not include <code>system</code> in <code>/api/health</code>.
+        </p>
+      </div>
+    )
+  }
+
+  const memoryUsedPercent =
+    system.host.memoryTotalMb > 0
+      ? ((system.host.memoryTotalMb - system.host.memoryAvailableMb) / system.host.memoryTotalMb) * 100
+      : 0
+  const memoryAvailablePercent =
+    system.host.memoryTotalMb > 0
+      ? (system.host.memoryAvailableMb / system.host.memoryTotalMb) * 100
+      : 0
+  const memoryStatus =
+    system.host.memoryAvailableMb < 2048 || memoryAvailablePercent < 10
+      ? 'error'
+      : system.host.memoryAvailableMb < 4096 || memoryAvailablePercent < 20
+      ? 'warn'
+      : 'ok'
+
+  const primaryDisk = [...system.host.disks].sort((a, b) => b.percentUsed - a.percentUsed)[0]
+  const diskStatus = primaryDisk
+    ? primaryDisk.percentUsed >= 95
+      ? 'error'
+      : primaryDisk.percentUsed >= 90
+      ? 'warn'
+      : 'ok'
+    : 'warn'
+
+  const load = system.host.loadAvg
+  const loadLabel = [load.one, load.five, load.fifteen]
+    .map((n) => (typeof n === 'number' ? n.toFixed(2) : '?'))
+    .join(' / ')
+
   return (
     <div className="rounded-xl border border-white/[0.07] bg-[#0d0d0d] p-3 flex flex-col gap-2">
       <div className="grid grid-cols-3 gap-2">
-        <div className="rounded-md bg-[#0a0a0a] border border-white/[0.04] px-2 py-2 flex flex-col items-center gap-1">
-          <MemoryStick size={12} className="text-[#555555]" />
-          <span className="text-[9px] font-mono text-[#3a3a3a] uppercase">mem</span>
-          <span className="text-[10px] font-mono text-[#666666]">—</span>
-        </div>
-        <div className="rounded-md bg-[#0a0a0a] border border-white/[0.04] px-2 py-2 flex flex-col items-center gap-1">
-          <Cpu size={12} className="text-[#555555]" />
-          <span className="text-[9px] font-mono text-[#3a3a3a] uppercase">cpu</span>
-          <span className="text-[10px] font-mono text-[#666666]">—</span>
-        </div>
-        <div className="rounded-md bg-[#0a0a0a] border border-white/[0.04] px-2 py-2 flex flex-col items-center gap-1">
-          <HardDrive size={12} className="text-[#555555]" />
-          <span className="text-[9px] font-mono text-[#3a3a3a] uppercase">disk</span>
-          <span className="text-[10px] font-mono text-[#666666]">—</span>
-        </div>
+        <MetricCard
+          icon={<MemoryStick size={12} />}
+          label="mem"
+          value={formatBytes(system.host.memoryAvailableMb)}
+          detail={`free; ${formatPercent(memoryUsedPercent)} used`}
+          status={memoryStatus}
+        />
+        <MetricCard
+          icon={<Cpu size={12} />}
+          label="api"
+          value={`${formatPercent(system.delamainBackend.cpuPercent1Min)} cpu`}
+          detail={`${formatBytes(system.delamainBackend.rssMb)} RSS; ${system.delamainBackend.numThreads} threads`}
+        />
+        <MetricCard
+          icon={<HardDrive size={12} />}
+          label="disk"
+          value={primaryDisk ? formatPercent(primaryDisk.percentUsed) : 'unknown'}
+          detail={
+            primaryDisk
+              ? `${primaryDisk.mountpoint}; ${formatBytes(primaryDisk.freeMb)} free`
+              : 'no disks reported'
+          }
+          status={diskStatus}
+        />
       </div>
-      <p className="text-[9px] font-mono text-[#3a3a3a] leading-relaxed">
-        Waiting for backend Prompt E: <code>system</code> block under <code>/api/health</code>
-        (rss, cpu%, load, disk free, worker tmux RSS). Falls into the three cards above.
-      </p>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[9px] font-mono text-[#555555]">
+        <span>host: {system.host.hostname}</span>
+        <span className="break-all">kernel: {system.host.kernel}</span>
+        <span>load: {loadLabel}</span>
+        <span>pid: {system.delamainBackend.pid}</span>
+        <span>uptime: {formatUptime(system.delamainBackend.uptimeSeconds)}</span>
+        <span>
+          tmux: {system.tmuxWorkers.count} workers / {formatBytes(system.tmuxWorkers.rssMbTotal)}
+        </span>
+      </div>
     </div>
   )
 }
 
 interface HealthPanelProps {
   entries: HealthEntry[]
+  system: HealthSystemMetrics | null
   syncthingDevices: SyncthingDevice[]
   syncthingConflictCount: number
   onRefresh?: () => void | Promise<void>
@@ -162,6 +290,7 @@ interface HealthPanelProps {
 
 export function HealthPanel({
   entries,
+  system,
   syncthingDevices,
   syncthingConflictCount,
   onRefresh,
@@ -265,10 +394,9 @@ export function HealthPanel({
         </section>
       )}
 
-      {/* System resources — placeholder until backend Prompt E lands */}
       <section className="flex flex-col gap-1.5">
         <SectionLabel>System resources (serrano)</SectionLabel>
-        <SystemMetricsPlaceholder />
+        <SystemMetricsCard system={system} />
       </section>
 
       {/* Helpers */}

@@ -5,6 +5,7 @@ import { api, AuthRequiredError, BackendUnreachableError } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/config'
 import {
   toHealthEntriesFromHealth,
+  toUIHealthSystem,
   toUIContextMode,
   toUIContextFiles,
   toUIConversation,
@@ -127,6 +128,29 @@ function upsertToolCall(message: ChatMessage, incoming: ToolCall): ChatMessage {
   const next = calls.slice()
   next[index] = merged
   return { ...message, toolCallsBefore: next, activeToolCallId: merged.id }
+}
+
+function mergeFetchedMessages(current: ChatMessage[], fetched: ChatMessage[]): ChatMessage[] {
+  const currentById = new Map(current.map((message) => [message.id, message]))
+  const fetchedIds = new Set(fetched.map((message) => message.id))
+  const merged = fetched.map((message) => {
+    const existing = currentById.get(message.id)
+    if (!existing) return message
+    return {
+      ...message,
+      streaming: existing.streaming && !message.content ? existing.streaming : message.streaming,
+      toolCalls: existing.toolCalls ?? message.toolCalls,
+      toolCallsBefore: existing.toolCallsBefore?.length ? existing.toolCallsBefore : message.toolCallsBefore,
+      activeToolCallId: existing.activeToolCallId ?? message.activeToolCallId,
+      runId: message.runId ?? existing.runId,
+      runStatus: existing.runStatus ?? message.runStatus,
+      error: existing.error ?? message.error,
+    }
+  })
+  for (const message of current) {
+    if (!fetchedIds.has(message.id)) merged.push(message)
+  }
+  return merged
 }
 
 export function useDelamainBackend() {
@@ -333,6 +357,7 @@ export function useDelamainBackend() {
           budgetUsed: budgetResp?.copilot_budget.used_premium_requests ?? s.budgetUsed,
           budgetTotal: budgetResp?.copilot_budget.monthly_premium_requests ?? s.budgetTotal,
           healthEntries: toHealthEntriesFromHealth(health),
+          healthSystem: toUIHealthSystem(health.system),
           tools: toolsResp.tools.map(toUITool),
           directActions: actionsResp.actions.map(toUIDirectAction),
           workers: workersResp.workers.map(toUIWorker),
@@ -719,7 +744,7 @@ export function useDelamainBackend() {
             c.id === activeConversationId
               ? {
                   ...c,
-                  messages: msgs.map(toUIMessage),
+                  messages: mergeFetchedMessages(c.messages, msgs.map(toUIMessage)),
                   contextMode: toUIContextMode(conversation.context_mode),
                   modelRoute: conversation.model_route,
                   incognitoRoute: conversation.incognito_route,
@@ -1240,6 +1265,7 @@ export function useDelamainBackend() {
       setState((s) => ({
         ...s,
         healthEntries: toHealthEntriesFromHealth(health),
+        healthSystem: toUIHealthSystem(health.system),
       }))
     } catch (err) {
       if (!handleBackendError(err)) {

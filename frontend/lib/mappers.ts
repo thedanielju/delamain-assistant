@@ -5,6 +5,7 @@ import type {
   BackendContextMode,
   BackendConversation,
   BackendFolder,
+  BackendHealthSystem,
   BackendMessage,
   BackendPermission,
   BackendSubscriptionHost,
@@ -23,6 +24,7 @@ import type {
   DirectAction,
   DirectActionGroup,
   Folder,
+  HealthSystemMetrics,
   Permission,
   SubscriptionHost,
   SubscriptionProvider,
@@ -275,6 +277,43 @@ export function toHealthEntriesFromHealth(health: {
     })
   }
   return entries
+}
+
+export function toUIHealthSystem(system: BackendHealthSystem | undefined): HealthSystemMetrics | null {
+  if (!system) return null
+  return {
+    delamainBackend: {
+      uptimeSeconds: system.delamain_backend.uptime_seconds,
+      rssMb: system.delamain_backend.rss_mb,
+      cpuPercent1Min: system.delamain_backend.cpu_percent_1min,
+      numThreads: system.delamain_backend.num_threads,
+      pid: system.delamain_backend.pid,
+    },
+    host: {
+      hostname: system.host.hostname,
+      kernel: system.host.kernel,
+      loadAvg: {
+        one: system.host.load_avg.one,
+        five: system.host.load_avg.five,
+        fifteen: system.host.load_avg.fifteen,
+      },
+      memoryTotalMb: system.host.memory_total_mb,
+      memoryAvailableMb: system.host.memory_available_mb,
+      disks: system.host.disks.map((disk) => ({
+        mountpoint: disk.mountpoint,
+        device: disk.device,
+        fstype: disk.fstype,
+        totalMb: disk.total_mb,
+        usedMb: disk.used_mb,
+        freeMb: disk.free_mb,
+        percentUsed: disk.percent_used,
+      })),
+    },
+    tmuxWorkers: {
+      count: system.tmux_workers.count,
+      rssMbTotal: system.tmux_workers.rss_mb_total,
+    },
+  }
 }
 
 // ── Permissions ──────────────────────────────────────────────────────────────

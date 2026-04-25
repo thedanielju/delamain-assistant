@@ -482,6 +482,7 @@ export function ChatLayout() {
             <div className="flex-1 overflow-y-auto">
               <HealthPanel
                 entries={state.healthEntries}
+                system={state.healthSystem}
                 syncthingDevices={state.syncthingDevices}
                 syncthingConflictCount={state.syncthingConflicts.length}
                 onRefresh={handleRefreshHealth}

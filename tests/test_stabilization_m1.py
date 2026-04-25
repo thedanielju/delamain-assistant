@@ -164,6 +164,45 @@ async def test_sse_replay_honors_last_event_id(test_config):
 
 
 @pytest.mark.asyncio
+async def test_sse_replay_honors_last_event_id_query_param(test_config):
+    db = Database(test_config.database.path)
+    await db.connect()
+    await db.migrate()
+    bus = EventBus(db)
+    await db.execute(
+        "INSERT INTO conversations(id, title) VALUES ('conv_sse_query', 'SSE query')"
+    )
+    first = await db.insert_event(
+        conversation_id="conv_sse_query",
+        run_id=None,
+        event_type="audit",
+        payload={"n": 1},
+    )
+    second = await db.insert_event(
+        conversation_id="conv_sse_query",
+        run_id=None,
+        event_type="audit",
+        payload={"n": 2},
+    )
+
+    request = _DisconnectedRequest({}, {"last_event_id": str(first["id"])})
+    chunks = [
+        chunk
+        async for chunk in stream_events(
+            request=request,
+            db=db,
+            bus=bus,
+            conversation_id="conv_sse_query",
+        )
+    ]
+    await db.close()
+
+    joined = "".join(chunks)
+    assert f"id: {first['id']}" not in joined
+    assert f"id: {second['id']}" in joined
+
+
+@pytest.mark.asyncio
 async def test_event_bus_emit_drops_oldest_when_queue_full(test_config):
     db = Database(test_config.database.path)
     await db.connect()
@@ -379,8 +418,9 @@ def _seed_running_run(path, status="running"):
 
 
 class _DisconnectedRequest:
-    def __init__(self, headers):
+    def __init__(self, headers, query_params=None):
         self.headers = headers
+        self.query_params = query_params or {}
 
     async def is_disconnected(self):
         return True

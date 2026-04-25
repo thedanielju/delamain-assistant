@@ -95,6 +95,42 @@ export interface HealthEntry {
   lastChecked?: string
 }
 
+export interface HealthDisk {
+  mountpoint: string
+  device: string
+  fstype: string
+  totalMb: number
+  usedMb: number
+  freeMb: number
+  percentUsed: number
+}
+
+export interface HealthSystemMetrics {
+  delamainBackend: {
+    uptimeSeconds: number
+    rssMb: number
+    cpuPercent1Min: number
+    numThreads: number
+    pid: number
+  }
+  host: {
+    hostname: string
+    kernel: string
+    loadAvg: {
+      one: number | null
+      five: number | null
+      fifteen: number | null
+    }
+    memoryTotalMb: number
+    memoryAvailableMb: number
+    disks: HealthDisk[]
+  }
+  tmuxWorkers: {
+    count: number
+    rssMbTotal: number
+  }
+}
+
 // ── Direct actions ───────────────────────────────────────────────────────────
 
 export type DirectActionGroup =
@@ -339,6 +375,7 @@ export interface AppState {
   systemContext: string
   shortTermContinuity: string
   healthEntries: HealthEntry[]
+  healthSystem: HealthSystemMetrics | null
   directActions: DirectAction[]
   workers: Worker[]
   workerTypeOptions: WorkerTypeOption[]

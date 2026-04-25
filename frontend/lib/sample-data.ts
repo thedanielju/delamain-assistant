@@ -120,6 +120,7 @@ export const INITIAL_STATE: AppState = {
     { id: 'h7', label: 'Models', status: 'unknown', detail: 'Endpoint not yet live', lastChecked: 'never' },
     { id: 'h8', label: 'Vault Index', status: 'ok', detail: '1,204 notes indexed', lastChecked: '5m ago' },
   ],
+  healthSystem: null,
   directActions: [
     { id: 'da1', group: 'health', label: 'health.backend', description: 'Check backend health', status: 'idle' },
     { id: 'da2', group: 'health', label: 'health.helpers', description: 'Check helper health', status: 'idle' },
