@@ -16,6 +16,27 @@ WORKER_TMUX_SOCKET = "/home/danielju/.local/share/delamain/workers.sock"
 SESSION_PREFIX = "dw-"
 CAPTURE_LINES = 200
 SUPPORTED_WORKER_HOSTS = {"serrano", "winpc"}
+PTY_CAPTURE_LINES = 200
+
+
+_TERMINAL_INPUT_KEYS = {
+    "\r": "Enter",
+    "\n": "Enter",
+    "\t": "Tab",
+    "\x7f": "BSpace",
+    "\b": "BSpace",
+    "\x03": "C-c",
+    "\x04": "C-d",
+    "\x1b[A": "Up",
+    "\x1b[B": "Down",
+    "\x1b[C": "Right",
+    "\x1b[D": "Left",
+    "\x1b[3~": "Delete",
+    "\x1b[H": "Home",
+    "\x1b[F": "End",
+    "\x1b[5~": "PageUp",
+    "\x1b[6~": "PageDown",
+}
 
 
 class WorkerManager:
@@ -33,6 +54,7 @@ class WorkerManager:
         self.bus = bus
         self.registry = registry
         self.tmux_socket = Path(tmux_socket or WORKER_TMUX_SOCKET)
+        self._input_locks: dict[str, asyncio.Lock] = {}
 
     async def start(
         self,
@@ -134,13 +156,29 @@ class WorkerManager:
             raise ValueError(f"Worker is not running (status={row['status']})")
         session_name = row["tmux_session"]
         try:
-            await self._send_keys(session_name, row["host"], "C-c", "")
+            await self._send_keys(
+                session_name,
+                row["host"],
+                "C-c",
+                "",
+                tmux_socket=row.get("tmux_socket"),
+            )
             await asyncio.sleep(0.5)
-            await self._send_keys(session_name, row["host"], "exit", "Enter")
+            await self._send_keys(
+                session_name,
+                row["host"],
+                "exit",
+                "Enter",
+                tmux_socket=row.get("tmux_socket"),
+            )
             await asyncio.sleep(1)
         except Exception:
             pass
-        alive = await self._session_alive(session_name, host=row["host"])
+        alive = await self._session_alive(
+            session_name,
+            host=row["host"],
+            tmux_socket=row.get("tmux_socket"),
+        )
         if alive:
             await self.db.execute(
                 """
@@ -176,7 +214,7 @@ class WorkerManager:
             raise ValueError(f"Worker is already {row['status']}")
         session_name = row["tmux_session"]
         try:
-            await self._kill_session(session_name, row["host"])
+            await self._kill_session(session_name, row["host"], tmux_socket=row.get("tmux_socket"))
         except Exception:
             pass
         await self.db.execute(
@@ -200,11 +238,20 @@ class WorkerManager:
     async def capture_output(self, worker_id: str, lines: int = CAPTURE_LINES) -> dict[str, Any]:
         row = await self._get_worker(worker_id)
         session_name = row["tmux_session"]
-        alive = await self._session_alive(session_name, host=row["host"])
+        alive = await self._session_alive(
+            session_name,
+            host=row["host"],
+            tmux_socket=row.get("tmux_socket"),
+        )
         output = ""
         if alive:
             try:
-                proc = await self._capture_process(session_name, row["host"], lines)
+                proc = await self._capture_process(
+                    session_name,
+                    row["host"],
+                    lines,
+                    tmux_socket=row.get("tmux_socket"),
+                )
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
                 if proc.returncode == 0:
                     output = stdout.decode("utf-8", errors="replace")
@@ -217,6 +264,66 @@ class WorkerManager:
             "lines_requested": lines,
             "output": output,
         }
+
+    async def prepare_pty(self, worker_id: str) -> dict[str, Any]:
+        row = await self._get_worker(worker_id)
+        if row["status"] != "running":
+            raise ValueError(f"Worker is not running (status={row['status']})")
+        alive = await self._session_alive(
+            row["tmux_session"],
+            host=row["host"],
+            tmux_socket=row.get("tmux_socket"),
+        )
+        if not alive:
+            await self.db.execute(
+                """
+                UPDATE workers
+                SET status = 'stopped',
+                    stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (worker_id,),
+            )
+            raise ValueError("Worker tmux session is gone")
+        return row
+
+    async def capture_pty_output(self, worker_id: str, lines: int = PTY_CAPTURE_LINES) -> str:
+        row = await self.prepare_pty(worker_id)
+        proc = await self._capture_process(
+            row["tmux_session"],
+            row["host"],
+            lines,
+            tmux_socket=row.get("tmux_socket"),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode != 0:
+            error = stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(error or "Failed to capture worker tmux pane")
+        return stdout.decode("utf-8", errors="replace")
+
+    async def send_terminal_input(self, worker_id: str, data: str) -> None:
+        if not data:
+            return
+        row = await self.prepare_pty(worker_id)
+        lock = self._input_locks.setdefault(worker_id, asyncio.Lock())
+        async with lock:
+            for literal, key in _terminal_input_chunks(data):
+                if literal:
+                    await self._send_keys(
+                        row["tmux_session"],
+                        row["host"],
+                        "-l",
+                        literal,
+                        tmux_socket=row.get("tmux_socket"),
+                    )
+                elif key:
+                    await self._send_keys(
+                        row["tmux_session"],
+                        row["host"],
+                        key,
+                        tmux_socket=row.get("tmux_socket"),
+                    )
 
     async def rename(self, worker_id: str, name: str) -> dict[str, Any]:
         row = await self._get_worker(worker_id)
@@ -281,7 +388,11 @@ class WorkerManager:
     async def refresh_status(self, worker_id: str) -> dict[str, Any]:
         row = await self._get_worker(worker_id)
         if row["status"] in ("running", "starting", "stopping"):
-            alive = await self._session_alive(row["tmux_session"], host=row["host"])
+            alive = await self._session_alive(
+                row["tmux_session"],
+                host=row["host"],
+                tmux_socket=row.get("tmux_socket"),
+            )
             if not alive and row["status"] != "stopped":
                 await self.db.execute(
                     """
@@ -302,7 +413,11 @@ class WorkerManager:
         alive = 0
         stopped = 0
         for row in rows:
-            session_alive = await self._session_alive(row["tmux_session"], host=row["host"])
+            session_alive = await self._session_alive(
+                row["tmux_session"],
+                host=row["host"],
+                tmux_socket=row.get("tmux_socket"),
+            )
             if session_alive:
                 alive += 1
                 if row["status"] == "starting":
@@ -372,7 +487,13 @@ class WorkerManager:
             stderr=asyncio.subprocess.PIPE,
         )
 
-    async def _send_keys(self, session_name: str, host: str, *keys: str) -> None:
+    async def _send_keys(
+        self,
+        session_name: str,
+        host: str,
+        *keys: str,
+        tmux_socket: str | None = None,
+    ) -> None:
         if host == "winpc":
             proc = await asyncio.create_subprocess_exec(
                 "/usr/bin/ssh",
@@ -382,9 +503,10 @@ class WorkerManager:
                 stderr=asyncio.subprocess.PIPE,
             )
         else:
+            socket_path = str(Path(tmux_socket) if tmux_socket else self.tmux_socket)
             proc = await asyncio.create_subprocess_exec(
                 "/usr/bin/tmux",
-                "-S", str(self.tmux_socket),
+                "-S", socket_path,
                 "send-keys",
                 "-t", session_name,
                 *keys,
@@ -393,7 +515,12 @@ class WorkerManager:
             )
         await asyncio.wait_for(proc.communicate(), timeout=5)
 
-    async def _kill_session(self, session_name: str, host: str) -> None:
+    async def _kill_session(
+        self,
+        session_name: str,
+        host: str,
+        tmux_socket: str | None = None,
+    ) -> None:
         if host == "winpc":
             proc = await asyncio.create_subprocess_exec(
                 "/usr/bin/ssh",
@@ -403,9 +530,10 @@ class WorkerManager:
                 stderr=asyncio.subprocess.PIPE,
             )
         else:
+            socket_path = str(Path(tmux_socket) if tmux_socket else self.tmux_socket)
             proc = await asyncio.create_subprocess_exec(
                 "/usr/bin/tmux",
-                "-S", str(self.tmux_socket),
+                "-S", socket_path,
                 "kill-session",
                 "-t", session_name,
                 stdout=asyncio.subprocess.PIPE,
@@ -418,6 +546,7 @@ class WorkerManager:
         session_name: str,
         host: str,
         lines: int,
+        tmux_socket: str | None = None,
     ) -> asyncio.subprocess.Process:
         if host == "winpc":
             return await asyncio.create_subprocess_exec(
@@ -434,9 +563,10 @@ class WorkerManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+        socket_path = str(Path(tmux_socket) if tmux_socket else self.tmux_socket)
         return await asyncio.create_subprocess_exec(
             "/usr/bin/tmux",
-            "-S", str(self.tmux_socket),
+            "-S", socket_path,
             "capture-pane",
             "-p",
             "-t", session_name,
@@ -445,7 +575,13 @@ class WorkerManager:
             stderr=asyncio.subprocess.PIPE,
         )
 
-    async def _session_alive(self, session_name: str, *, host: str) -> bool:
+    async def _session_alive(
+        self,
+        session_name: str,
+        *,
+        host: str,
+        tmux_socket: str | None = None,
+    ) -> bool:
         try:
             if host == "winpc":
                 proc = await asyncio.create_subprocess_exec(
@@ -456,9 +592,10 @@ class WorkerManager:
                     stderr=asyncio.subprocess.PIPE,
                 )
             else:
+                socket_path = str(Path(tmux_socket) if tmux_socket else self.tmux_socket)
                 proc = await asyncio.create_subprocess_exec(
                     "/usr/bin/tmux",
-                    "-S", str(self.tmux_socket),
+                    "-S", socket_path,
                     "has-session",
                     "-t", session_name,
                     stdout=asyncio.subprocess.PIPE,
@@ -539,6 +676,40 @@ def _worker_row_out(row: dict[str, Any]) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             out["metadata"] = {}
     return out
+
+
+def _terminal_input_chunks(data: str) -> list[tuple[str | None, str | None]]:
+    chunks: list[tuple[str | None, str | None]] = []
+    literal: list[str] = []
+    special_sequences = sorted(_TERMINAL_INPUT_KEYS, key=len, reverse=True)
+
+    def flush_literal() -> None:
+        if literal:
+            chunks.append(("".join(literal), None))
+            literal.clear()
+
+    i = 0
+    while i < len(data):
+        matched_sequence: str | None = None
+        if data[i] == "\x1b":
+            for sequence in special_sequences:
+                if data.startswith(sequence, i):
+                    matched_sequence = sequence
+                    break
+        elif data[i] in _TERMINAL_INPUT_KEYS:
+            matched_sequence = data[i]
+
+        if matched_sequence is not None:
+            flush_literal()
+            chunks.append((None, _TERMINAL_INPUT_KEYS[matched_sequence]))
+            i += len(matched_sequence)
+            continue
+
+        literal.append(data[i])
+        i += 1
+
+    flush_literal()
+    return chunks
 
 
 def _winpc_tmux_command(*args: str) -> str:

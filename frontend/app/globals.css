@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'katex/dist/katex.min.css';
+@import '@xterm/xterm/css/xterm.css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -172,6 +173,20 @@
 
 .dot-pulse {
   animation: dot-pulse 1.2s ease-in-out infinite;
+}
+
+.worker-xterm .xterm {
+  height: 100%;
+  padding: 8px 10px;
+}
+
+.worker-xterm .xterm-screen,
+.worker-xterm .xterm-rows {
+  min-height: 100%;
+}
+
+.worker-xterm .xterm-viewport {
+  background-color: #030303 !important;
 }
 
 /* Markdown prose styles for assistant messages */

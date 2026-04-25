@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from delamain_backend.main import create_app
 from delamain_backend.workers.registry import WorkerType, WorkerTypeRegistry
@@ -63,7 +64,7 @@ def _has_tmux() -> bool:
     return Path("/usr/bin/tmux").exists()
 
 
-pytestmark = pytest.mark.skipif(not _has_tmux(), reason="tmux not available")
+tmux_required = pytest.mark.skipif(not _has_tmux(), reason="tmux not available")
 
 _TEST_LOOP: asyncio.AbstractEventLoop | None = None
 
@@ -115,6 +116,7 @@ def test_list_worker_types(test_config):
         ]
 
 
+@tmux_required
 def test_start_shell_worker_and_lifecycle(test_config, shell_worker_registry, tmp_path):
     """Start a shell worker, verify it runs, capture output, stop, kill."""
     socket_path = tmp_path / "test-workers.sock"
@@ -179,6 +181,7 @@ def test_start_shell_worker_and_lifecycle(test_config, shell_worker_registry, tm
             socket_path.unlink()
 
 
+@tmux_required
 def test_duplicate_worker_name_rejected(test_config, shell_worker_registry, tmp_path):
     """Cannot start two workers with the same name."""
     socket_path = tmp_path / "test-workers.sock"
@@ -260,7 +263,7 @@ def test_winpc_worker_uses_ssh_wsl_tmux_adapter(test_config, shell_worker_regist
         assert session_name.startswith("dw-worker_")
         return FakeProc()
 
-    async def fake_alive(self, session_name, *, host):
+    async def fake_alive(self, session_name, *, host, tmux_socket=None):
         assert host == "winpc"
         return True
 
@@ -287,6 +290,7 @@ def test_winpc_worker_uses_ssh_wsl_tmux_adapter(test_config, shell_worker_regist
         )
 
 
+@tmux_required
 def test_stop_already_stopped_rejected(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"
     app = create_app(test_config)
@@ -313,6 +317,7 @@ def test_stop_already_stopped_rejected(test_config, shell_worker_registry, tmp_p
             socket_path.unlink()
 
 
+@tmux_required
 def test_kill_already_stopped_rejected(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"
     app = create_app(test_config)
@@ -358,6 +363,7 @@ def test_worker_not_found(test_config, shell_worker_registry, tmp_path):
             loop.run_until_complete(mgr.get_worker("worker_nonexistent"))
 
 
+@tmux_required
 def test_refresh_detects_dead_session(test_config, shell_worker_registry, tmp_path):
     """If a tmux session dies externally, refresh_status should mark it stopped."""
     socket_path = tmp_path / "test-workers.sock"
@@ -431,6 +437,7 @@ def test_reconcile_on_startup_marks_dead_workers_stopped(test_config, shell_work
             socket_path.unlink()
 
 
+@tmux_required
 def test_conversation_scoped_worker_list(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"
     app = create_app(test_config)
@@ -466,6 +473,7 @@ def test_conversation_scoped_worker_list(test_config, shell_worker_registry, tmp
             socket_path.unlink()
 
 
+@tmux_required
 def test_worker_rename_persists_and_emits_audit(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"
     app = create_app(test_config)
@@ -538,6 +546,168 @@ def test_worker_api_endpoints(test_config):
         assert id(app.state.worker_manager) == manager_id
 
 
+def test_worker_pty_ws_missing_or_stopped_rejected(test_config):
+    class FakePtyManager:
+        def __init__(self, message: str):
+            self.message = message
+
+        async def prepare_pty(self, worker_id):
+            raise ValueError(self.message)
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        app.state.worker_manager = FakePtyManager("Worker not found: worker_missing")
+        with client.websocket_connect("/api/workers/worker_missing/pty") as ws:
+            assert ws.receive_json() == {
+                "type": "error",
+                "message": "Worker not found: worker_missing",
+            }
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+
+        app.state.worker_manager = FakePtyManager("Worker is not running (status=stopped)")
+        with client.websocket_connect("/api/workers/worker_stopped/pty") as ws:
+            assert ws.receive_json() == {
+                "type": "error",
+                "message": "Worker is not running (status=stopped)",
+            }
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+
+
+def test_worker_pty_ws_initial_snapshot(test_config):
+    class FakePtyManager:
+        def __init__(self):
+            self.capture_calls: list[tuple[str, int]] = []
+
+        async def prepare_pty(self, worker_id):
+            return {"id": worker_id, "status": "running"}
+
+        async def capture_pty_output(self, worker_id, lines=200):
+            self.capture_calls.append((worker_id, lines))
+            return "older tmux line\ninitial tmux snapshot\n"
+
+        async def send_terminal_input(self, worker_id, data):
+            raise AssertionError("input should not be sent")
+
+    mgr = FakePtyManager()
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        app.state.worker_manager = mgr
+        with client.websocket_connect("/api/workers/worker_live/pty?lines=1") as ws:
+            assert ws.receive_json() == {
+                "type": "snapshot",
+                "data": "initial tmux snapshot\n",
+            }
+        assert mgr.capture_calls[0] == ("worker_live", 2000)
+
+
+def test_worker_pty_ws_input_calls_manager(test_config):
+    class FakePtyManager:
+        def __init__(self):
+            self.inputs: list[tuple[str, str]] = []
+
+        async def prepare_pty(self, worker_id):
+            return {"id": worker_id, "status": "running"}
+
+        async def capture_pty_output(self, worker_id, lines=200):
+            return "ready\n"
+
+        async def send_terminal_input(self, worker_id, data):
+            self.inputs.append((worker_id, data))
+
+    mgr = FakePtyManager()
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        app.state.worker_manager = mgr
+        with client.websocket_connect("/api/workers/worker_live/pty") as ws:
+            assert ws.receive_json()["type"] == "snapshot"
+            ws.send_json({"type": "input", "data": "echo hello\r"})
+        assert mgr.inputs == [("worker_live", "echo hello\r")]
+
+
+def test_worker_pty_ws_snapshot_fanout(test_config):
+    class FakePtyManager:
+        async def prepare_pty(self, worker_id):
+            return {"id": worker_id, "status": "running"}
+
+        async def capture_pty_output(self, worker_id, lines=200):
+            return f"snapshot for {worker_id}\n"
+
+        async def send_terminal_input(self, worker_id, data):
+            raise AssertionError("input should not be sent")
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        app.state.worker_manager = FakePtyManager()
+        with client.websocket_connect("/api/workers/worker_live/pty") as ws1:
+            with client.websocket_connect("/api/workers/worker_live/pty") as ws2:
+                assert ws1.receive_json() == {
+                    "type": "snapshot",
+                    "data": "snapshot for worker_live\n",
+                }
+                assert ws2.receive_json() == {
+                    "type": "snapshot",
+                    "data": "snapshot for worker_live\n",
+                }
+
+
+def test_worker_terminal_input_uses_tmux_send_keys_for_local_and_winpc(
+    test_config,
+    shell_worker_registry,
+    tmp_path,
+    monkeypatch,
+):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+    calls = []
+
+    async def fake_alive(self, session_name, *, host, tmux_socket=None):
+        return True
+
+    async def fake_send_keys(self, session_name, host, *keys, tmux_socket=None):
+        calls.append((session_name, host, keys))
+
+    from delamain_backend.workers.manager import WorkerManager
+
+    monkeypatch.setattr(WorkerManager, "_session_alive", fake_alive)
+    monkeypatch.setattr(WorkerManager, "_send_keys", fake_send_keys)
+
+    with TestClient(app):
+        loop = _event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        loop.run_until_complete(
+            app.state.db.execute(
+                """
+                INSERT INTO workers(
+                    id, name, worker_type, host, tmux_session, tmux_socket, command, status
+                ) VALUES
+                    ('worker_local_pty', 'local-pty', 'test_shell', 'serrano', 'dw-local', ?, '', 'running'),
+                    ('worker_winpc_pty', 'winpc-pty', 'remote_worker', 'winpc', 'dw-winpc', ?, '', 'running')
+                """,
+                (str(socket_path), str(socket_path)),
+            )
+        )
+
+        loop.run_until_complete(mgr.send_terminal_input("worker_local_pty", "abc\r\x1b[A"))
+        loop.run_until_complete(mgr.send_terminal_input("worker_winpc_pty", "xyz\x7f"))
+
+    assert calls == [
+        ("dw-local", "serrano", ("-l", "abc")),
+        ("dw-local", "serrano", ("Enter",)),
+        ("dw-local", "serrano", ("Up",)),
+        ("dw-winpc", "winpc", ("-l", "xyz")),
+        ("dw-winpc", "winpc", ("BSpace",)),
+    ]
+
+
+@tmux_required
 def test_worker_rename_endpoint(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"
     app = create_app(test_config)
@@ -568,6 +738,7 @@ def test_worker_rename_endpoint(test_config, shell_worker_registry, tmp_path):
             socket_path.unlink()
 
 
+@tmux_required
 def test_worker_audit_events(test_config, shell_worker_registry, tmp_path):
     """Worker start/kill should emit audit events."""
     socket_path = tmp_path / "test-workers.sock"

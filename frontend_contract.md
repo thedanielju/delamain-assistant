@@ -1077,6 +1077,33 @@ Response:
 }
 ```
 
+### WS /api/workers/{worker_id}/pty
+
+Open an interactive worker terminal bridge backed by the worker's existing tmux session and socket metadata. This endpoint is for live terminal UI only; `GET /api/workers/{worker_id}/output` remains the REST snapshot/manual fallback.
+
+Query params:
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `snapshot` | boolean | true | Send an initial bounded `tmux capture-pane` snapshot |
+| `lines` | integer (1-2000) | 200 | Initial snapshot line count |
+
+Server-to-client text frames are JSON:
+
+```json
+{ "type": "snapshot", "data": "initial pane text..." }
+{ "type": "data", "data": "new pane text..." }
+{ "type": "error", "message": "Worker is not running (status=stopped)" }
+```
+
+Client-to-server input frames should be JSON:
+
+```json
+{ "type": "input", "data": "echo hello\r" }
+```
+
+The backend closes cleanly with an error frame when the worker is missing, not running, or the tmux session is gone. Multiple clients may observe the same worker; input is serialized through the worker manager's tmux send-keys path. WinPC workers continue through `ssh winpc` -> `wsl.exe tmux ...`.
+
 ### WorkerOut Shape
 
 ```json

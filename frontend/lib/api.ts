@@ -123,6 +123,19 @@ async function request<T>(path: string, init: RequestInitExt = {}): Promise<T> {
   return (await res.json()) as T
 }
 
+export function workerPtyWebSocketUrl(id: string): string {
+  const path = `${API_BASE}/workers/${encodeURIComponent(id)}/pty`
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    const url = new URL(path)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    return url.toString()
+  }
+
+  if (typeof window === 'undefined') return path
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}${path.startsWith('/') ? path : `/${path}`}`
+}
+
 export const api = {
   health(): Promise<BackendHealth> {
     return request<BackendHealth>('/health', { timeoutMs: HEALTH_PROBE_TIMEOUT_MS })

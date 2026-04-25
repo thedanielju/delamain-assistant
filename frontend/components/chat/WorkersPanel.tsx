@@ -3,10 +3,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Plus, Square, Camera, FileText, Terminal, Globe, X,
-  Maximize2, Minimize2, ChevronDown, ChevronRight, PlugZap, Cpu, Pencil,
+  ChevronDown, ChevronRight, PlugZap, Cpu, Pencil,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Worker, WorkerStatus, WorkerTypeOption } from '@/lib/types'
+import { WorkerTerminalXterm } from './WorkerTerminalXterm'
 
 const WORKER_ICON: Record<Worker['type'], React.ReactNode> = {
   opencode:       <Cpu size={12} />,
@@ -40,123 +41,6 @@ const STATUS_COLOR: Record<WorkerStatus, string> = {
   idle:      'bg-[#555555]',
   stopped:   'bg-[var(--accent-pink)]',
   capturing: 'bg-[var(--accent-blue)]',
-}
-
-const LIVE_POLL_MS = 2000
-
-// ── Terminal (live-polled capture) ───────────────────────────────────────────
-
-function WorkerTerminal({
-  worker,
-  fullscreen,
-  onCapture,
-  onToggleFullscreen,
-  onClose,
-}: {
-  worker: Worker
-  fullscreen: boolean
-  onCapture: (id: string) => void
-  onToggleFullscreen: () => void
-  onClose?: () => void
-}) {
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const lines = worker.output
-    ? worker.output.split('\n')
-    : ['(waiting for first capture…)']
-  const live = worker.status === 'running'
-
-  // Auto-scroll on new output
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [worker.output])
-
-  // Poll capture while visible + worker is running. This is the
-  // closest thing we have to a live feed until the backend adds a PTY
-  // websocket. Each poll is GET /api/workers/{id}/output?lines=200.
-  useEffect(() => {
-    if (!live) return
-    onCapture(worker.id)
-    const h = setInterval(() => onCapture(worker.id), LIVE_POLL_MS)
-    return () => clearInterval(h)
-  }, [worker.id, live, onCapture])
-
-  return (
-    <div
-      className={cn(
-        'flex flex-col bg-[#030303] overflow-hidden',
-        fullscreen
-          ? 'fixed inset-0 z-50 rounded-none'
-          : 'rounded-b-xl border-t border-white/[0.05]'
-      )}
-    >
-      {/* Terminal title bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/[0.06] flex-shrink-0 bg-[#080808]">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono text-[#555555]">{worker.name}</span>
-          <span
-            className={cn('w-1.5 h-1.5 rounded-full', STATUS_COLOR[worker.status], worker.status === 'running' && 'dot-pulse')}
-          />
-          {live && (
-            <span className="text-[9px] font-mono text-[#3a3a3a]">
-              polling every {LIVE_POLL_MS / 1000}s
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => onCapture(worker.id)}
-            className="p-1 text-[#444444] hover:text-[#888888] transition-colors rounded"
-            aria-label="Refresh capture"
-            title="Refresh now"
-          >
-            <Camera size={11} />
-          </button>
-          <button
-            onClick={onToggleFullscreen}
-            className="p-1 text-[#444444] hover:text-[#888888] transition-colors rounded"
-            aria-label={fullscreen ? 'Minimize terminal' : 'Fullscreen terminal'}
-            title={fullscreen ? 'Minimize' : 'Fullscreen'}
-          >
-            {fullscreen ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
-          </button>
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="p-1 text-[#444444] hover:text-[#888888] transition-colors rounded"
-              aria-label="Close terminal"
-            >
-              <X size={11} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Output area */}
-      <div
-        className={cn(
-          'overflow-y-auto px-3 py-2 font-mono text-[11px] leading-[1.7] text-[#7ec8a0] scrollbar-thin flex-1',
-          fullscreen ? 'min-h-0' : 'h-48'
-        )}
-      >
-        {lines.map((line, i) => (
-          <div
-            key={i}
-            className="whitespace-pre-wrap break-all"
-          >
-            {line}
-          </div>
-        ))}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Footer note — read-only for now */}
-      <div className="flex items-center gap-1.5 px-3 py-1.5 border-t border-white/[0.05] flex-shrink-0 bg-[#040404]">
-        <span className="text-[9px] font-mono text-[#3a3a3a]">
-          read-only · interactive PTY requires backend websocket bridge
-        </span>
-      </div>
-    </div>
-  )
 }
 
 // ── Action button ─────────────────────────────────────────────────────────────
@@ -308,7 +192,7 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill, onRename }
               label={showTerminal ? 'Hide pane' : 'Live pane'}
               onClick={() => setShowTerminal((v) => !v)}
               accent="blue"
-              title="Live-poll the tmux pane (read-only until PTY bridge exists)"
+              title="Open interactive tmux PTY websocket; Capture remains a one-shot fallback"
             />
             {worker.status === 'running' && (
               <ActionBtn icon={<Square size={10} />} label="Stop" onClick={() => onStop(worker.id)} accent="pink" />
@@ -318,7 +202,7 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill, onRename }
 
           {/* Inline live pane */}
           {showTerminal && !termFullscreen && (
-            <WorkerTerminal
+            <WorkerTerminalXterm
               worker={worker}
               fullscreen={false}
               onCapture={onCapture}
@@ -331,7 +215,7 @@ function WorkerCard({ worker, onCapture, onSummarize, onStop, onKill, onRename }
 
       {/* Fullscreen pane */}
       {showTerminal && termFullscreen && (
-        <WorkerTerminal
+        <WorkerTerminalXterm
           worker={worker}
           fullscreen={true}
           onCapture={onCapture}
