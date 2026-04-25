@@ -11,6 +11,22 @@ from typing import Any, Protocol
 from delamain_backend.agent.router import api_family_for_route
 from delamain_backend.agent.tool_normalize import normalize_tool_calls
 
+_SAFE_RESPONSE_HEADER_MARKERS = (
+    "copilot",
+    "premium",
+    "ratelimit",
+    "rate-limit",
+    "request",
+    "usage",
+)
+_SENSITIVE_RESPONSE_HEADER_MARKERS = (
+    "authorization",
+    "api-key",
+    "cookie",
+    "secret",
+    "token",
+)
+
 
 class ModelCallError(RuntimeError):
     pass
@@ -167,6 +183,9 @@ def _litellm_worker(
 
 def normalize_model_result(raw: Any, *, model_route: str, api_family: str) -> dict[str, Any]:
     data = _to_plain_data(raw)
+    provider_usage = _to_plain_data(_get(data, "usage"))
+    response_headers = _extract_response_headers(data)
+    hidden_params = _extract_hidden_params(data)
     return {
         "id": str(_get(data, "id", f"model_{uuid.uuid4().hex}")),
         "model": str(_get(data, "model", model_route) or model_route),
@@ -182,7 +201,14 @@ def normalize_model_result(raw: Any, *, model_route: str, api_family: str) -> di
             }
             for call in normalize_tool_calls(data, api_family)
         ],
-        "usage": _normalize_usage(_get(data, "usage"), model_route),
+        "usage": _normalize_usage(
+            provider_usage,
+            model_route,
+            response_headers=response_headers,
+            hidden_params=hidden_params,
+        ),
+        "provider_usage": provider_usage if isinstance(provider_usage, dict) else None,
+        "response_headers": response_headers or None,
         "raw": data,
     }
 
@@ -281,7 +307,13 @@ def _extract_text(data: Any, api_family: str) -> str:
     return "".join(parts)
 
 
-def _normalize_usage(usage: Any, model_route: str) -> dict[str, Any] | None:
+def _normalize_usage(
+    usage: Any,
+    model_route: str,
+    *,
+    response_headers: dict[str, Any] | None = None,
+    hidden_params: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     if usage is None:
         return None
     data = _to_plain_data(usage)
@@ -297,19 +329,163 @@ def _normalize_usage(usage: Any, model_route: str) -> dict[str, Any] | None:
         or _get(data, "total_output_tokens")
         or 0
     )
-    return _usage_payload(model_route, input_tokens, output_tokens)
+    premium_units, premium_source = _premium_request_count(
+        model_route, data, response_headers or {}
+    )
+    usage_source = "provider_body" if isinstance(data, dict) and data else "estimated"
+    estimated = premium_source == "estimated_per_completed_call"
+    return _usage_payload(
+        model_route,
+        input_tokens,
+        output_tokens,
+        premium_units=premium_units,
+        estimated_cost_usd=_estimated_cost(data, hidden_params or {}),
+        usage_source=usage_source,
+        usage_estimated=estimated,
+        premium_request_source=premium_source,
+    )
 
 
-def _usage_payload(model_route: str, input_tokens: int, output_tokens: int) -> dict[str, Any]:
+def _usage_payload(
+    model_route: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    premium_units: int | None = None,
+    estimated_cost_usd: float | None = None,
+    usage_source: str = "estimated",
+    usage_estimated: bool = True,
+    premium_request_source: str | None = None,
+) -> dict[str, Any]:
     provider = model_route.split("/", 1)[0] if "/" in model_route else None
     return {
         "model": model_route,
         "provider": provider,
         "input_tokens": int(input_tokens or 0),
         "output_tokens": int(output_tokens or 0),
-        "premium_units": None,
-        "estimated_cost_usd": None,
+        "premium_units": premium_units,
+        "estimated_cost_usd": estimated_cost_usd,
+        "usage_source": usage_source,
+        "usage_estimated": bool(usage_estimated),
+        "premium_request_source": premium_request_source,
     }
+
+
+def _premium_request_count(
+    model_route: str, usage: Any, response_headers: dict[str, Any]
+) -> tuple[int | None, str | None]:
+    count = _first_int(
+        usage,
+        (
+            "premium_request_count",
+            "premium_requests",
+            "premium_units",
+            "billable_requests",
+            "request_count",
+        ),
+    )
+    if count is not None:
+        return count, "provider_body"
+    count = _first_int(
+        response_headers,
+        (
+            "x-copilot-premium-request-count",
+            "x-copilot-premium-requests",
+            "x-copilot-premium-units",
+            "x-premium-request-count",
+            "x-premium-requests",
+        ),
+    )
+    if count is not None:
+        return count, "provider_headers"
+    if model_route.startswith("github_copilot/"):
+        return 1, "estimated_per_completed_call"
+    return None, None
+
+
+def _estimated_cost(usage: Any, hidden_params: dict[str, Any]) -> float | None:
+    value = _first_number(
+        usage,
+        (
+            "estimated_cost_usd",
+            "cost_usd",
+            "response_cost",
+        ),
+    )
+    if value is not None:
+        return value
+    return _first_number(
+        hidden_params,
+        (
+            "response_cost",
+            "estimated_cost_usd",
+            "cost_usd",
+        ),
+    )
+
+
+def _first_int(value: Any, keys: tuple[str, ...]) -> int | None:
+    number = _first_number(value, keys)
+    return int(number) if number is not None else None
+
+
+def _first_number(value: Any, keys: tuple[str, ...]) -> float | None:
+    if not isinstance(value, dict):
+        return None
+    lowered = {str(key).lower(): item for key, item in value.items()}
+    for key in keys:
+        item = lowered.get(key.lower())
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, int | float):
+            return float(item)
+        if isinstance(item, str):
+            try:
+                return float(item)
+            except ValueError:
+                continue
+    return None
+
+
+def _extract_response_headers(data: Any) -> dict[str, Any]:
+    headers = _find_dict(data, ("_response_headers", "response_headers"))
+    if not headers:
+        return {}
+    return _safe_response_headers(headers)
+
+
+def _extract_hidden_params(data: Any) -> dict[str, Any]:
+    return _find_dict(data, ("_hidden_params", "hidden_params"))
+
+
+def _find_dict(value: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, dict):
+                return candidate
+        for child in value.values():
+            found = _find_dict(child, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_dict(child, keys)
+            if found:
+                return found
+    return {}
+
+
+def _safe_response_headers(headers: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in headers.items():
+        name = str(key).lower()
+        if any(marker in name for marker in _SENSITIVE_RESPONSE_HEADER_MARKERS):
+            continue
+        if not any(marker in name for marker in _SAFE_RESPONSE_HEADER_MARKERS):
+            continue
+        safe[name] = _to_plain_data(value)
+    return safe
 
 
 def _should_stub_tool_call(prompt: str, messages: list[dict[str, Any]]) -> bool:
@@ -366,8 +542,20 @@ def _to_plain_data(value: Any) -> Any:
         return {str(key): _to_plain_data(item) for key, item in value.items()}
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
-        return _to_plain_data(model_dump())
+        dumped = _to_plain_data(model_dump())
+        return _with_private_response_metadata(value, dumped)
     to_dict = getattr(value, "to_dict", None)
     if callable(to_dict):
-        return _to_plain_data(to_dict())
+        dumped = _to_plain_data(to_dict())
+        return _with_private_response_metadata(value, dumped)
     return str(value)
+
+
+def _with_private_response_metadata(value: Any, dumped: Any) -> Any:
+    if not isinstance(dumped, dict):
+        return dumped
+    for attr in ("_hidden_params", "_response_headers"):
+        private_value = getattr(value, attr, None)
+        if private_value:
+            dumped[attr] = _to_plain_data(private_value)
+    return dumped

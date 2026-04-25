@@ -9,9 +9,19 @@ from delamain_backend.db import Database
 SETTINGS_DEFAULTS: dict[str, Any] = {
     "context_mode": "normal",
     "title_generation_enabled": True,
+    "task_model": "github_copilot/claude-haiku-4.5",
     "copilot_budget_hard_override_enabled": False,
 }
 SETTINGS_KEYS = set(SETTINGS_DEFAULTS) | {"model_default"}
+
+
+def allowed_model_routes(config) -> set[str]:
+    return {
+        config.models.default,
+        config.models.fallback_high_volume,
+        config.models.fallback_cheap,
+        config.models.paid_fallback,
+    }
 DEFAULT_DISABLED_TOOLS = {"run_shell"}
 TOOL_APPROVAL_POLICIES = {"auto", "confirm"}
 

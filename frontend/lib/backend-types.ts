@@ -95,6 +95,7 @@ export interface BackendSettings {
   context_mode: BackendContextMode
   title_generation_enabled: boolean
   model_default: string
+  task_model?: string
   copilot_budget_hard_override_enabled?: boolean
 }
 

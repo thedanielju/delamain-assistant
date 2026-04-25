@@ -103,18 +103,27 @@ def test_action_run_retrieval_and_artifact_ownership(test_config):
 def test_settings_persist_and_emit_audit(test_config):
     app = create_app(test_config)
     with TestClient(app) as client:
+        initial = client.get("/api/settings")
+        assert initial.status_code == 200
+        assert initial.json()["settings"]["task_model"] == test_config.models.fallback_cheap
+
         conversation_id = client.post("/api/conversations", json={}).json()["id"]
         patched = client.patch(
             "/api/settings",
             json={
                 "conversation_id": conversation_id,
-                "values": {"context_mode": "blank_slate", "title_generation_enabled": False},
+                "values": {
+                    "context_mode": "blank_slate",
+                    "title_generation_enabled": False,
+                    "task_model": test_config.models.paid_fallback,
+                },
             },
         )
         assert patched.status_code == 200
         settings = patched.json()["settings"]
         assert settings["context_mode"] == "blank_slate"
         assert settings["title_generation_enabled"] is False
+        assert settings["task_model"] == test_config.models.paid_fallback
 
     con = sqlite3.connect(test_config.database.path)
     values = dict(con.execute("SELECT key, value FROM settings").fetchall())
@@ -127,7 +136,19 @@ def test_settings_persist_and_emit_audit(test_config):
     ]
     con.close()
     assert json.loads(values["context_mode"]) == "blank_slate"
+    assert json.loads(values["task_model"]) == test_config.models.paid_fallback
     assert any(payload["action"] == "settings.updated" for payload in payloads)
+
+
+def test_task_model_setting_rejects_unknown_route(test_config):
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        response = client.patch(
+            "/api/settings",
+            json={"values": {"task_model": "not/a-real-route"}},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unsupported task_model"
 
 
 def test_tool_toggle_is_enforced_in_model_tool_loop(test_config):

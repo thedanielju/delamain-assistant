@@ -53,6 +53,7 @@ def test_usage_endpoint_returns_all_provider_shapes(test_config, monkeypatch):
     assert sorted(providers) == ["claude", "codex", "copilot", "openrouter"]
     assert providers["copilot"]["used"] == 1
     assert providers["copilot"]["limit_or_credits"] == 300
+    assert providers["copilot"]["details"]["last_observed_at"]
     assert providers["openrouter"]["used"] == 1
     assert providers["openrouter"]["status"] == "not_configured"
     assert providers["claude"]["used"] == 1
@@ -63,6 +64,47 @@ def test_usage_endpoint_returns_all_provider_shapes(test_config, monkeypatch):
     )
     assert providers["codex"]["used"] == 1
     assert payload["subscriptions"]["providers"]["codex"]["aggregate_status"] == "ok"
+
+
+def test_usage_endpoint_reads_openrouter_credits_when_api_key_is_configured(
+    test_config, monkeypatch
+):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            payload = {"data": {"total_credits": 0, "total_usage": 0}}
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", " sk-openrouter-test ")
+    monkeypatch.delenv("ANTHROPIC_ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "delamain_backend.usage.urllib.request.urlopen",
+        lambda request, timeout=5: FakeResponse(),
+    )
+    monkeypatch.setattr("delamain_backend.subscription_status._CACHE", None)
+    monkeypatch.setattr(
+        "delamain_backend.subscription_status._run",
+        lambda argv: {"exit_code": 1, "stdout": "", "stderr": "", "duration_ms": 1},
+    )
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        payload = client.get("/api/usage").json()
+
+    openrouter = {
+        item["provider"]: item for item in payload["providers"]
+    }["openrouter"]
+    assert openrouter["status"] == "ok"
+    assert openrouter["wired"] is True
+    assert openrouter["limit_or_credits"] == 0
+    assert openrouter["details"]["configured"] is True
+    assert openrouter["details"]["total_usage"] == 0
 
 
 def test_subscription_status_endpoint_can_refresh(test_config, monkeypatch):

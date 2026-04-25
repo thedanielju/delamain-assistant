@@ -76,6 +76,7 @@ export const INITIAL_STATE: AppState = {
   sensitiveUnlocked: false,
   model: 'github_copilot/gpt-5.4-mini',
   defaultModel: 'github_copilot/gpt-5.4-mini',
+  taskModel: 'github_copilot/claude-haiku-4.5',
   modelOptions: [
     'github_copilot/gpt-5.4-mini',
     'github_copilot/gpt-5-mini',

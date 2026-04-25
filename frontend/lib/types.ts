@@ -321,6 +321,7 @@ export interface AppState {
   contextFiles: ContextFile[]
   model: string
   defaultModel: string
+  taskModel: string
   modelOptions: string[]
   budgetUsed: number
   budgetTotal: number

@@ -73,7 +73,7 @@ As of 2026-04-24:
 - `term.danielju.com/` serves the Next.js frontend
 - `term.danielju.com/api/*` proxies to the production backend on `8420`
 - `term.danielju.com/terminal/` proxies to ttyd
-- `chat.danielju.com` is redirect-only and returns `308` to `term.danielju.com`
+- `chat.danielju.com` is no longer provisioned and should not be used for checks, redirects, or fallback paths
 
 On Daniel's Mac, the canonical local working copy is:
 
@@ -424,8 +424,9 @@ Operational changes already made on `serrano`:
   - `/terminal/` -> ttyd on `127.0.0.1:7681`
 
 - `chat.danielju.com`
-  - redirect-only
-  - `308` to `https://term.danielju.com$request_uri`
+  - deleted from Cloudflare
+  - not a supported public surface
+  - do not use for checks, redirects, or fallback paths
 
 ## Security Model
 

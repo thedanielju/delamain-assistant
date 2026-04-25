@@ -134,11 +134,13 @@ export function ChatLayout() {
     handleStartWorker,
     handleChangeTheme,
     handleDismissFile,
+    handleRefreshHealth,
     handleRefreshUsage,
     handleRefreshSyncthing,
     handleResolveSyncthingConflict,
     handleChangeModel,
     handleChangeDefaultModel,
+    handleChangeTaskModel,
     handleSetContextMode,
     handleToggleTitleGeneration,
     handleToggleCopilotHardOverride,
@@ -482,6 +484,7 @@ export function ChatLayout() {
                 entries={state.healthEntries}
                 syncthingDevices={state.syncthingDevices}
                 syncthingConflictCount={state.syncthingConflicts.length}
+                onRefresh={handleRefreshHealth}
                 onOpenSyncthing={() => openPanel('syncthing')}
               />
             </div>
@@ -582,6 +585,7 @@ export function ChatLayout() {
             <SettingsPanel
               model={state.model}
               defaultModel={state.defaultModel}
+              taskModel={state.taskModel}
               modelOptions={state.modelOptions}
               budgetUsed={state.budgetUsed}
               budgetTotal={state.budgetTotal}
@@ -600,6 +604,7 @@ export function ChatLayout() {
               onSetToolApprovalPolicy={handleSetToolApprovalPolicy}
               onChangeModel={handleChangeModel}
               onChangeDefaultModel={handleChangeDefaultModel}
+              onChangeTaskModel={handleChangeTaskModel}
               onSetContextMode={handleSetContextMode}
               onChangeTheme={handleChangeTheme}
               onToggleTitleGeneration={handleToggleTitleGeneration}

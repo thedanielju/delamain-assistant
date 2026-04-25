@@ -472,7 +472,13 @@ Response:
         "soft_threshold_percent": 60,
         "hard_threshold_percent": 90,
         "hard_override_enabled": false,
-        "enforced": false
+        "enforced": false,
+        "tracked_model_calls": 12,
+        "authoritative_premium_requests": 0,
+        "estimated_premium_requests": 12,
+        "usage_estimated": true,
+        "usage_source": "estimated",
+        "last_observed_at": "2026-04-22T20:00:00.000Z"
       }
     },
     {
@@ -734,6 +740,7 @@ Response:
     "context_mode": "normal",
     "title_generation_enabled": true,
     "model_default": "github_copilot/gpt-5.4-mini",
+    "task_model": "github_copilot/claude-haiku-4.5",
     "copilot_budget_hard_override_enabled": false
   }
 }
@@ -750,7 +757,7 @@ Request body:
 | `values` | object | Key-value pairs of settings to update |
 | `conversation_id` | string or null | For audit event association |
 
-Supported keys: `context_mode` (`"normal"` or `"blank_slate"`), `title_generation_enabled` (boolean), `model_default` (must be a configured route), and `copilot_budget_hard_override_enabled` (boolean).
+Supported keys: `context_mode` (`"normal"` or `"blank_slate"`), `title_generation_enabled` (boolean), `model_default` (must be a configured route), `task_model` (must be a configured route, used by worker summaries/background helper tasks), and `copilot_budget_hard_override_enabled` (boolean).
 
 ### GET /api/settings/models
 
@@ -769,7 +776,7 @@ Response:
 
 ### GET /api/settings/budget
 
-Returns approximate Copilot request tracking for the current UTC month. This counts completed persisted `model_calls` rows whose route starts with `github_copilot/`; it is request-count tracking, not authoritative provider billing.
+Returns Copilot request tracking for the current UTC month. This counts completed persisted `model_calls` rows whose route starts with `github_copilot/`. Newer rows may include provider-observed premium request counts; legacy rows and rows without provider count metadata fall back to an estimated one premium request per completed Copilot call.
 
 Response:
 
@@ -780,6 +787,12 @@ Response:
     "used_premium_requests": 1,
     "monthly_premium_requests": 300,
     "percent_used": 0.33,
+    "tracked_model_calls": 1,
+    "authoritative_premium_requests": 0,
+    "estimated_premium_requests": 1,
+    "usage_estimated": true,
+    "usage_source": "estimated",
+    "last_observed_at": "2026-04-22T20:00:00.000Z",
     "soft_threshold_percent": 60,
     "hard_threshold_percent": 90,
     "status": "ok",
@@ -987,6 +1000,18 @@ Response: `WorkerOut`
 ### GET /api/workers/{worker_id}
 
 Get worker details. Add `?refresh=true` to check tmux liveness and update status if the session has died.
+
+Response: `WorkerOut`
+
+### PATCH /api/workers/{worker_id}
+
+Rename a worker. The backend rejects an empty name and rejects duplicate names among workers that are currently `running` or `starting`. When the worker has an associated `conversation_id`, this emits a `worker.renamed` audit event.
+
+Request body:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | New human-readable worker name |
 
 Response: `WorkerOut`
 

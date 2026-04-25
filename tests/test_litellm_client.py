@@ -64,6 +64,55 @@ def test_normalizes_responses_model_text_usage_and_tool_calls():
     assert result["usage"]["provider"] == "github_copilot"
 
 
+def test_normalizes_copilot_authoritative_usage_metadata():
+    raw = {
+        "id": "chat_2",
+        "model": "github_copilot/gpt-5-mini",
+        "choices": [{"message": {"content": "hello"}}],
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 4,
+            "premium_request_count": 2,
+        },
+        "_response_headers": {
+            "x-copilot-premium-requests": "2",
+            "authorization": "Bearer should-not-persist",
+        },
+        "_hidden_params": {"response_cost": 0.0123},
+    }
+    result = normalize_model_result(
+        raw,
+        model_route="github_copilot/gpt-5-mini",
+        api_family="chat_completions",
+    )
+
+    assert result["usage"]["premium_units"] == 2
+    assert result["usage"]["premium_request_source"] == "provider_body"
+    assert result["usage"]["usage_source"] == "provider_body"
+    assert result["usage"]["usage_estimated"] is False
+    assert result["usage"]["estimated_cost_usd"] == 0.0123
+    assert result["provider_usage"]["premium_request_count"] == 2
+    assert result["response_headers"] == {"x-copilot-premium-requests": "2"}
+
+
+def test_normalizes_copilot_estimated_premium_request_when_provider_omits_count():
+    raw = {
+        "id": "chat_3",
+        "model": "github_copilot/gpt-5-mini",
+        "choices": [{"message": {"content": "hello"}}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+    }
+    result = normalize_model_result(
+        raw,
+        model_route="github_copilot/gpt-5-mini",
+        api_family="chat_completions",
+    )
+
+    assert result["usage"]["premium_units"] == 1
+    assert result["usage"]["premium_request_source"] == "estimated_per_completed_call"
+    assert result["usage"]["usage_estimated"] is True
+
+
 def test_formats_tool_loop_messages_for_chat_completions():
     messages = [
         {"role": "user", "content": "time"},

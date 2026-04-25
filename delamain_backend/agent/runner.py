@@ -417,15 +417,37 @@ class RunManager:
                 continue
 
             usage = model_result.get("usage")
+            usage = _with_copilot_usage_defaults(attempt.model_route, usage)
+            provider_usage = model_result.get("provider_usage")
+            response_headers = model_result.get("response_headers")
             await self.db.execute(
                 """
                 UPDATE model_calls
                 SET status = 'completed',
                     usage_json = ?,
+                    usage_source = ?,
+                    usage_estimated = ?,
+                    input_tokens = ?,
+                    output_tokens = ?,
+                    premium_request_count = ?,
+                    estimated_cost_usd = ?,
+                    provider_usage_json = ?,
+                    response_headers_json = ?,
                     completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 WHERE id = ?
                 """,
-                (json.dumps(usage, sort_keys=True) if usage else None, model_call_id),
+                (
+                    json.dumps(usage, sort_keys=True) if usage else None,
+                    usage.get("usage_source") if usage else None,
+                    int(bool(usage.get("usage_estimated"))) if usage else None,
+                    usage.get("input_tokens") if usage else None,
+                    usage.get("output_tokens") if usage else None,
+                    usage.get("premium_units") if usage else None,
+                    usage.get("estimated_cost_usd") if usage else None,
+                    json.dumps(provider_usage, sort_keys=True) if provider_usage else None,
+                    json.dumps(response_headers, sort_keys=True) if response_headers else None,
+                    model_call_id,
+                ),
             )
             if usage:
                 await self.bus.emit(
@@ -908,6 +930,21 @@ def _model_usage_event_payload(
         "premium_request_count": usage.get("premium_units"),
         "estimated_cost": usage.get("estimated_cost_usd"),
     }
+
+
+def _with_copilot_usage_defaults(
+    model_route: str, usage: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if usage is None:
+        return None
+    normalized = dict(usage)
+    if is_copilot_route(model_route) and normalized.get("premium_units") is None:
+        normalized["premium_units"] = 1
+        normalized.setdefault("premium_request_source", "estimated_per_completed_call")
+        normalized["usage_estimated"] = True
+    normalized.setdefault("usage_source", "provider_body")
+    normalized.setdefault("usage_estimated", False)
+    return normalized
 
 
 def _arguments_target_sensitive(arguments: dict[str, Any], sensitive_root: Path) -> bool:

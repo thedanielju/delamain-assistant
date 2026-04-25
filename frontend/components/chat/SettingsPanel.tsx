@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { BudgetBar } from './BudgetBar'
@@ -68,6 +68,7 @@ type SettingsTabId = 'settings' | 'theme'
 interface SettingsPanelProps {
   model: string
   defaultModel: string
+  taskModel: string
   modelOptions: string[]
   budgetUsed: number
   budgetTotal: number
@@ -86,6 +87,7 @@ interface SettingsPanelProps {
   onSetToolApprovalPolicy: (toolName: string, policy: 'auto' | 'confirm') => void
   onChangeModel: (model: string) => void
   onChangeDefaultModel: (model: string) => void
+  onChangeTaskModel: (model: string) => void
   onSetContextMode: (mode: ContextMode) => void
   onChangeTheme: (theme: ThemeName) => void
   onToggleTitleGeneration: () => void
@@ -100,33 +102,15 @@ const TABS: { id: SettingsTabId; label: string }[] = [
   { id: 'theme', label: 'Theme' },
 ]
 
-// ── Task model chooser (localStorage-backed, until backend task_model lands) ─
-
-const TASK_MODEL_KEY = 'delamain.taskModel'
-
 function TaskModelSelect({
   modelOptions,
-  defaultModel,
+  value,
+  onChange,
 }: {
   modelOptions: string[]
-  defaultModel: string
+  value: string
+  onChange: (model: string) => void
 }) {
-  const [value, setValue] = useState<string>('')
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    setValue(window.localStorage.getItem(TASK_MODEL_KEY) ?? '')
-  }, [])
-
-  const update = (next: string) => {
-    setValue(next)
-    if (typeof window === 'undefined') return
-    if (next) window.localStorage.setItem(TASK_MODEL_KEY, next)
-    else window.localStorage.removeItem(TASK_MODEL_KEY)
-  }
-
-  const effective = value || defaultModel
-
   return (
     <div>
       <p className="text-[10px] font-mono text-[#444444] uppercase tracking-wider mb-1.5">
@@ -134,13 +118,10 @@ function TaskModelSelect({
       </p>
       <select
         value={value}
-        onChange={(e) => update(e.target.value)}
+        onChange={(e) => onChange(e.target.value)}
         className="w-full bg-[#111111] border border-white/[0.08] rounded-md px-2.5 py-1.5 text-xs font-mono text-[#888888] outline-none hover:border-white/[0.14] transition-colors"
         title="Used for worker summaries and other background LLM tasks"
       >
-        <option value="" className="bg-[#111111] text-[#cccccc]">
-          (use default — {defaultModel})
-        </option>
         {modelOptions.map((m) => (
           <option key={m} value={m} className="bg-[#111111] text-[#cccccc]">
             {m}
@@ -148,8 +129,7 @@ function TaskModelSelect({
         ))}
       </select>
       <p className="text-[9px] font-mono text-[#3a3a3a] mt-1 leading-relaxed">
-        Local preference (browser-only) → {effective}. Migrates to backend
-        setting once <code>task_model</code> is supported (Prompt C4).
+        Used for worker summaries and other background tasks.
       </p>
     </div>
   )
@@ -158,10 +138,10 @@ function TaskModelSelect({
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function SettingsPanel({
-  model, defaultModel, modelOptions, budgetUsed, budgetTotal, contextMode, contextFiles,
+  model, defaultModel, taskModel, modelOptions, budgetUsed, budgetTotal, contextMode, contextFiles,
   tools, theme, titleGeneration, copilotBudgetHardOverride, systemContext, shortTermContinuity,
   activeTab, onClose, onToggleTool, onSetToolApprovalPolicy, onChangeModel, onChangeDefaultModel,
-  onSetContextMode, onChangeTheme, onToggleTitleGeneration, onToggleCopilotHardOverride,
+  onChangeTaskModel, onSetContextMode, onChangeTheme, onToggleTitleGeneration, onToggleCopilotHardOverride,
   onChangeSystemContext, onChangeShortTermContinuity, onSetTab,
 }: SettingsPanelProps) {
   const [confirmPending, setConfirmPending] = useState<null | {
@@ -240,7 +220,11 @@ export function SettingsPanel({
                       ))}
                     </select>
                   </div>
-                  <TaskModelSelect modelOptions={modelOptions} defaultModel={defaultModel} />
+                  <TaskModelSelect
+                    modelOptions={modelOptions}
+                    value={taskModel}
+                    onChange={onChangeTaskModel}
+                  />
                   <BudgetBar used={budgetUsed} total={budgetTotal} />
                 </div>
               </AccordionSection>

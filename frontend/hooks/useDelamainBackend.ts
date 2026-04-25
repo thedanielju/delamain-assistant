@@ -48,6 +48,9 @@ import type {
 
 export type BackendConnection = 'probing' | 'connected' | 'offline' | 'auth_required' | 'mock'
 
+const LEGACY_TASK_MODEL_KEY = 'delamain.taskModel'
+const DEFAULT_TASK_MODEL = 'github_copilot/claude-haiku-4.5'
+
 export interface AuditEntry {
   id: string
   conversationId: string
@@ -282,6 +285,33 @@ export function useDelamainBackend() {
           ? syncConflicts.conflicts.map(toUISyncthingConflict)
           : []
 
+        const modelOptions = [
+          modelsResp.default,
+          modelsResp.fallback_high_volume,
+          modelsResp.fallback_cheap,
+          modelsResp.paid_fallback,
+        ].filter((value, index, arr): value is string => Boolean(value) && arr.indexOf(value) === index)
+
+        let taskModel = settingsResp.settings.task_model || DEFAULT_TASK_MODEL
+        const legacyTaskModel =
+          typeof window !== 'undefined'
+            ? window.localStorage.getItem(LEGACY_TASK_MODEL_KEY)
+            : null
+        if (
+          legacyTaskModel &&
+          taskModel === DEFAULT_TASK_MODEL &&
+          modelOptions.includes(legacyTaskModel)
+        ) {
+          taskModel = legacyTaskModel
+          api.patchSettings({ task_model: legacyTaskModel })
+            .then(() => {
+              window.localStorage.removeItem(LEGACY_TASK_MODEL_KEY)
+            })
+            .catch(() => {
+              /* ignore */
+            })
+        }
+
         setState((s) => ({
           ...s,
           connection: 'connected',
@@ -294,16 +324,12 @@ export function useDelamainBackend() {
           titleGeneration: settingsResp.settings.title_generation_enabled,
           copilotBudgetHardOverride: Boolean(settingsResp.settings.copilot_budget_hard_override_enabled),
           defaultModel: settingsResp.settings.model_default,
+          taskModel,
           model: firstConversation?.modelRoute ?? settingsResp.settings.model_default,
           incognito: firstConversation?.incognitoRoute ?? s.incognito,
           sensitiveUnlocked: firstConversation?.sensitiveUnlocked ?? s.sensitiveUnlocked,
           sensitive: firstConversation?.sensitiveUnlocked ?? s.sensitive,
-          modelOptions: [
-            modelsResp.default,
-            modelsResp.fallback_high_volume,
-            modelsResp.fallback_cheap,
-            modelsResp.paid_fallback,
-          ].filter((value, index, arr): value is string => Boolean(value) && arr.indexOf(value) === index),
+          modelOptions,
           budgetUsed: budgetResp?.copilot_budget.used_premium_requests ?? s.budgetUsed,
           budgetTotal: budgetResp?.copilot_budget.monthly_premium_requests ?? s.budgetTotal,
           healthEntries: toHealthEntriesFromHealth(health),
@@ -1070,10 +1096,8 @@ export function useDelamainBackend() {
   )
 
   // Summarize: capture pane, then spawn a new conversation titled
-  // "Worker summary: <name>" and submit a prompt against the task model.
-  // Task model currently comes from localStorage ('delamain.taskModel')
-  // falling back to the backend default. A proper persisted setting
-  // is backend work (see prompt C4).
+  // "Worker summary: <name>" and submit a prompt against the persisted
+  // task model setting.
   const handleSummarizeWorker = useCallback(
     async (workerId: string) => {
       if (!connected) return
@@ -1081,9 +1105,7 @@ export function useDelamainBackend() {
       if (!worker) return
       try {
         const cap = await api.getWorkerOutput(workerId, 500)
-        const taskModel =
-          (typeof window !== 'undefined' && window.localStorage.getItem('delamain.taskModel')) ||
-          state.defaultModel
+        const taskModel = state.taskModel
         const created = await api.createConversation({
           title: `Worker summary: ${worker.name}`,
           context_mode: 'blank_slate',
@@ -1115,7 +1137,7 @@ export function useDelamainBackend() {
         /* ignore */
       }
     },
-    [connected, handleBackendError, state.workers, state.defaultModel]
+    [connected, handleBackendError, state.taskModel, state.workers]
   )
 
   const handleRenameWorker = useCallback(
@@ -1238,6 +1260,21 @@ export function useDelamainBackend() {
       }
     },
     [activeConversationId, connected, handleBackendError, state.defaultModel]
+  )
+
+  const handleChangeTaskModel = useCallback(
+    async (model: string) => {
+      const prev = state.taskModel
+      setState((s) => ({ ...s, taskModel: model }))
+      if (!connected) return
+      try {
+        await api.patchSettings({ task_model: model }, activeConversationId || undefined)
+      } catch (err) {
+        handleBackendError(err)
+        setState((s) => ({ ...s, taskModel: prev }))
+      }
+    },
+    [activeConversationId, connected, handleBackendError, state.taskModel]
   )
 
   const handleSetContextMode = useCallback(
@@ -1609,6 +1646,7 @@ export function useDelamainBackend() {
     handleRefreshHealth,
     handleChangeModel,
     handleChangeDefaultModel,
+    handleChangeTaskModel,
     handleSetContextMode,
     handleToggleTitleGeneration,
     handleChangeSystemContext,

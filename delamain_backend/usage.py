@@ -49,6 +49,14 @@ async def usage_summary(config: AppConfig, db: Database) -> dict[str, Any]:
                 "hard_threshold_percent": copilot["hard_threshold_percent"],
                 "hard_override_enabled": copilot["hard_override_enabled"],
                 "enforced": copilot["enforced"],
+                "tracked_model_calls": copilot["tracked_model_calls"],
+                "authoritative_premium_requests": copilot[
+                    "authoritative_premium_requests"
+                ],
+                "estimated_premium_requests": copilot["estimated_premium_requests"],
+                "usage_estimated": copilot["usage_estimated"],
+                "usage_source": copilot["usage_source"],
+                "last_observed_at": copilot["last_observed_at"],
             },
         },
         _stub_provider(
@@ -82,6 +90,8 @@ async def usage_summary(config: AppConfig, db: Database) -> dict[str, Any]:
             "wired": openrouter_credits.get("status") == "ok",
             "details": {
                 "reason": openrouter_credits.get("reason"),
+                "configured": openrouter_credits.get("configured"),
+                "source": openrouter_credits.get("source"),
                 "remaining_credits": openrouter_credits.get("remaining_credits"),
                 "total_credits": openrouter_credits.get("credits"),
                 "total_usage": openrouter_credits.get("total_usage"),
@@ -165,31 +175,58 @@ def _stub_provider(
 def _openrouter_credits(config: AppConfig) -> dict[str, Any]:
     key = _secret(config, "OPENROUTER_API_KEY")
     if not key:
-        return {"status": "not_configured", "reason": "OPENROUTER_API_KEY is not set"}
+        return {
+            "status": "not_configured",
+            "configured": False,
+            "reason": "OPENROUTER_API_KEY is not set",
+            "source": None,
+        }
     request = urllib.request.Request(
         "https://openrouter.ai/api/v1/credits",
-        headers={"Authorization": f"Bearer {key}"},
+        headers={
+            "Authorization": f"Bearer {key}",
+            "User-Agent": "delamain-assistant/0.1",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             data = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        return {"status": "unavailable", "reason": str(exc)}
+        return {
+            "status": "unavailable",
+            "configured": True,
+            "reason": str(exc),
+            "source": "openrouter_credits",
+        }
     payload = data.get("data") if isinstance(data, dict) else None
     if not isinstance(payload, dict):
-        return {"status": "unavailable", "reason": "OpenRouter credits response was invalid"}
-    total = payload.get("total_credits") or payload.get("credits")
-    used = payload.get("total_usage")
+        return {
+            "status": "unavailable",
+            "configured": True,
+            "reason": "OpenRouter credits response was invalid",
+            "source": "openrouter_credits",
+        }
+    total = _first_present(payload, "total_credits", "credits")
+    used = _first_present(payload, "total_usage", "usage")
     remaining = None
     if isinstance(total, (int, float)) and isinstance(used, (int, float)):
         remaining = max(0.0, float(total) - float(used))
     return {
         "status": "ok",
+        "configured": True,
         "credits": total,
         "total_usage": used,
         "remaining_credits": remaining,
         "reason": None,
+        "source": "openrouter_credits",
     }
+
+
+def _first_present(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None
 
 
 def _anthropic_costs(config: AppConfig) -> dict[str, Any]:
@@ -295,8 +332,8 @@ def _month_start_datetime() -> datetime:
 
 def _secret(config: AppConfig, name: str) -> str | None:
     value = os.environ.get(name)
-    if value:
-        return value
+    if value and value.strip():
+        return value.strip()
     for env_path in _env_paths(config):
         loaded = _secret_from_env_file(env_path, name)
         if loaded:
@@ -322,7 +359,10 @@ def _secret_from_env_file(path: Path, name: str) -> str | None:
     prefix = f"{name}="
     for line in lines:
         stripped = line.strip()
+        if stripped.startswith("export "):
+            stripped = stripped.removeprefix("export ").strip()
         if not stripped or stripped.startswith("#") or not stripped.startswith(prefix):
             continue
-        return stripped.removeprefix(prefix).strip().strip('"').strip("'")
+        value = stripped.removeprefix(prefix).strip().strip('"').strip("'")
+        return value.strip() or None
     return None

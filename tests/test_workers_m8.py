@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -64,6 +65,16 @@ def _has_tmux() -> bool:
 
 pytestmark = pytest.mark.skipif(not _has_tmux(), reason="tmux not available")
 
+_TEST_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _event_loop() -> asyncio.AbstractEventLoop:
+    global _TEST_LOOP
+    if _TEST_LOOP is None or _TEST_LOOP.is_closed():
+        _TEST_LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_TEST_LOOP)
+    return _TEST_LOOP
+
 
 def test_list_worker_types(test_config):
     app = create_app(test_config)
@@ -98,9 +109,7 @@ def test_start_shell_worker_and_lifecycle(test_config, shell_worker_registry, tm
             tmux_socket=str(socket_path),
         )
 
-        import asyncio
-
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
 
         # Start a shell worker
         result = loop.run_until_complete(
@@ -152,9 +161,8 @@ def test_duplicate_worker_name_rejected(test_config, shell_worker_registry, tmp_
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -180,9 +188,8 @@ def test_unknown_worker_type_rejected(test_config, shell_worker_registry, tmp_pa
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -200,9 +207,8 @@ def test_unsupported_host_rejected(test_config, shell_worker_registry, tmp_path)
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -235,13 +241,12 @@ def test_winpc_worker_uses_ssh_wsl_tmux_adapter(test_config, shell_worker_regist
         return True
 
     from delamain_backend.workers.manager import WorkerManager, _winpc_tmux_command
-    import asyncio
 
     monkeypatch.setattr(WorkerManager, "_start_session_process", fake_start)
     monkeypatch.setattr(WorkerManager, "_session_alive", fake_alive)
 
     with TestClient(app):
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -263,9 +268,8 @@ def test_stop_already_stopped_rejected(test_config, shell_worker_registry, tmp_p
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -290,9 +294,8 @@ def test_kill_already_stopped_rejected(test_config, shell_worker_registry, tmp_p
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -317,9 +320,8 @@ def test_worker_not_found(test_config, shell_worker_registry, tmp_path):
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -338,10 +340,9 @@ def test_refresh_detects_dead_session(test_config, shell_worker_registry, tmp_pa
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
         import subprocess
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -374,9 +375,8 @@ def test_reconcile_on_startup_marks_dead_workers_stopped(test_config, shell_work
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -412,9 +412,8 @@ def test_conversation_scoped_worker_list(test_config, shell_worker_registry, tmp
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -448,9 +447,8 @@ def test_worker_rename_persists_and_emits_audit(test_config, shell_worker_regist
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -521,9 +519,8 @@ def test_worker_rename_endpoint(test_config, shell_worker_registry, tmp_path):
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         app.state.worker_manager = WorkerManager(
             config=test_config,
             db=app.state.db,
@@ -553,9 +550,8 @@ def test_worker_audit_events(test_config, shell_worker_registry, tmp_path):
     app = create_app(test_config)
     with TestClient(app) as client:
         from delamain_backend.workers.manager import WorkerManager
-        import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = _event_loop()
         mgr = WorkerManager(
             config=test_config,
             db=app.state.db,

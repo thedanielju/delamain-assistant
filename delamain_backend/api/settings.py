@@ -15,6 +15,7 @@ from delamain_backend.settings_store import (
     SETTINGS_DEFAULTS,
     SETTINGS_KEYS,
     TOOL_APPROVAL_POLICIES,
+    allowed_model_routes,
     disabled_tools,
     set_setting,
     tool_approval_policies,
@@ -165,10 +166,7 @@ def _validate_setting(config: AppConfig, key: str, value: Any) -> None:
             status_code=400,
             detail="copilot_budget_hard_override_enabled must be boolean",
         )
-    if key == "model_default" and value not in {
-        config.models.default,
-        config.models.fallback_high_volume,
-        config.models.fallback_cheap,
-        config.models.paid_fallback,
-    }:
+    if key == "model_default" and value not in allowed_model_routes(config):
         raise HTTPException(status_code=400, detail="Unsupported model_default")
+    if key == "task_model" and value not in allowed_model_routes(config):
+        raise HTTPException(status_code=400, detail="Unsupported task_model")

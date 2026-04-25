@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   RefreshCw,
   FolderSync,
@@ -156,7 +156,7 @@ interface HealthPanelProps {
   entries: HealthEntry[]
   syncthingDevices: SyncthingDevice[]
   syncthingConflictCount: number
-  onRefresh?: () => void
+  onRefresh?: () => void | Promise<void>
   onOpenSyncthing: () => void
 }
 
@@ -170,10 +170,18 @@ export function HealthPanel({
   const [refreshing, setRefreshing] = useState(false)
 
   const handleRefresh = () => {
+    if (!onRefresh) return
     setRefreshing(true)
-    onRefresh?.()
-    setTimeout(() => setRefreshing(false), 1200)
+    Promise.resolve(onRefresh()).finally(() => {
+      setTimeout(() => setRefreshing(false), 600)
+    })
   }
+
+  useEffect(() => {
+    if (!onRefresh) return
+    const h = setInterval(() => onRefresh(), 30_000)
+    return () => clearInterval(h)
+  }, [onRefresh])
 
   const { serviceEntries, helperEntries, budgetEntries, otherEntries } = useMemo(() => {
     const service: HealthEntry[] = []

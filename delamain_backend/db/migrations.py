@@ -221,3 +221,22 @@ MIGRATIONS.append(
         """,
     )
 )
+
+MIGRATIONS.append(
+    (
+        5,
+        """
+        ALTER TABLE model_calls ADD COLUMN usage_source TEXT;
+        ALTER TABLE model_calls ADD COLUMN usage_estimated INTEGER;
+        ALTER TABLE model_calls ADD COLUMN input_tokens INTEGER;
+        ALTER TABLE model_calls ADD COLUMN output_tokens INTEGER;
+        ALTER TABLE model_calls ADD COLUMN premium_request_count INTEGER;
+        ALTER TABLE model_calls ADD COLUMN estimated_cost_usd REAL;
+        ALTER TABLE model_calls ADD COLUMN provider_usage_json TEXT;
+        ALTER TABLE model_calls ADD COLUMN response_headers_json TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_model_calls_budget
+            ON model_calls(status, model_route, created_at);
+        """,
+    )
+)
