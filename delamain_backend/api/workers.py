@@ -15,7 +15,6 @@ from delamain_backend.workers.registry import WorkerTypeRegistry
 router = APIRouter(tags=["workers"])
 PTY_INITIAL_LINES = 200
 PTY_STREAM_LINES = 2000
-PTY_POLL_INTERVAL_SECONDS = 0.35
 
 
 class WorkerStartRequest(BaseModel):
@@ -194,29 +193,28 @@ async def _worker_pty_output_loop(
     snapshot: bool,
     initial_lines: int,
 ) -> None:
-    previous = ""
+    subscription = None
     try:
+        subscription = await mgr.subscribe_pty_output(worker_id)
         if snapshot:
-            previous = await mgr.capture_pty_output(worker_id, lines=PTY_STREAM_LINES)
+            output = await mgr.capture_pty_output(worker_id, lines=PTY_STREAM_LINES)
             await websocket.send_json(
-                {"type": "snapshot", "data": _tail_lines(previous, initial_lines)}
+                {"type": "snapshot", "data": _tail_lines(_trim_trailing_blank_lines(output), initial_lines)}
             )
-        else:
-            previous = await mgr.capture_pty_output(worker_id, lines=PTY_STREAM_LINES)
 
         while True:
-            await asyncio.sleep(PTY_POLL_INTERVAL_SECONDS)
-            output = await mgr.capture_pty_output(worker_id, lines=PTY_STREAM_LINES)
-            delta = _capture_delta(previous, output)
-            previous = output
-            if delta:
-                await websocket.send_json({"type": "data", "data": delta})
+            data = await subscription.receive()
+            if data:
+                await websocket.send_json({"type": "data", "data": data})
     except WebSocketDisconnect:
         return
     except ValueError as exc:
         await _send_pty_error_and_close(websocket, str(exc), code=1011)
     except RuntimeError:
         return
+    finally:
+        if subscription is not None:
+            await subscription.close()
 
 
 def _pty_input_data(message: dict) -> str | None:
@@ -239,20 +237,6 @@ def _pty_input_data(message: dict) -> str | None:
     return None
 
 
-def _capture_delta(previous: str, current: str) -> str:
-    if not current or current == previous:
-        return ""
-    if not previous:
-        return current
-    if current.startswith(previous):
-        return current[len(previous):]
-    max_overlap = min(len(previous), len(current))
-    for size in range(max_overlap, 0, -1):
-        if previous[-size:] == current[:size]:
-            return current[size:]
-    return "\r\n" + current
-
-
 def _tail_lines(text: str, lines: int) -> str:
     if lines <= 0:
         return ""
@@ -260,6 +244,13 @@ def _tail_lines(text: str, lines: int) -> str:
     if lines >= len(parts):
         return text
     return "".join(parts[-lines:])
+
+
+def _trim_trailing_blank_lines(text: str) -> str:
+    parts = text.splitlines(keepends=True)
+    while parts and not parts[-1].strip():
+        parts.pop()
+    return "".join(parts)
 
 
 async def _send_pty_error_and_close(websocket: WebSocket, message: str, *, code: int) -> None:

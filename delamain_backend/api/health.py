@@ -9,6 +9,7 @@ from delamain_backend.budget import copilot_budget_status
 from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
 from delamain_backend.dependencies import assert_litellm_version_allowed, get_litellm_version
+from delamain_backend.system_status import system_status
 
 router = APIRouter(tags=["health"])
 
@@ -33,6 +34,7 @@ async def health(config: AppConfig = Depends(get_config), db: Database = Depends
     }
     sqlite_ok = await db.healthcheck()
     budget = await copilot_budget_status(config, db)
+    system = await system_status(db)
     return {
         "status": "ok" if sqlite_ok and litellm_allowed else "degraded",
         "sqlite": {"path": str(config.database.path), "ok": sqlite_ok},
@@ -49,6 +51,7 @@ async def health(config: AppConfig = Depends(get_config), db: Database = Depends
         },
         "budget": budget,
         "helpers": helpers,
+        "system": system,
     }
 
 

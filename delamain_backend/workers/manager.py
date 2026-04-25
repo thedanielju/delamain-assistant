@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import shlex
+import shutil
+import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +60,8 @@ class WorkerManager:
         self.registry = registry
         self.tmux_socket = Path(tmux_socket or WORKER_TMUX_SOCKET)
         self._input_locks: dict[str, asyncio.Lock] = {}
+        self._pty_lock = asyncio.Lock()
+        self._pty_brokers: dict[str, WorkerPtyBroker] = {}
 
     async def start(
         self,
@@ -301,6 +308,21 @@ class WorkerManager:
             error = stderr.decode("utf-8", errors="replace").strip()
             raise ValueError(error or "Failed to capture worker tmux pane")
         return stdout.decode("utf-8", errors="replace")
+
+    async def subscribe_pty_output(self, worker_id: str) -> WorkerPtySubscription:
+        row = await self.prepare_pty(worker_id)
+        async with self._pty_lock:
+            broker = self._pty_brokers.get(worker_id)
+            if broker is None or broker.closed:
+                broker = WorkerPtyBroker(self, worker_id, row)
+                await broker.start()
+                self._pty_brokers[worker_id] = broker
+            return broker.subscribe()
+
+    async def _remove_pty_broker(self, worker_id: str, broker: WorkerPtyBroker) -> None:
+        async with self._pty_lock:
+            if self._pty_brokers.get(worker_id) is broker:
+                self._pty_brokers.pop(worker_id, None)
 
     async def send_terminal_input(self, worker_id: str, data: str) -> None:
         if not data:
@@ -575,6 +597,133 @@ class WorkerManager:
             stderr=asyncio.subprocess.PIPE,
         )
 
+    async def _enable_pipe_pane(
+        self,
+        session_name: str,
+        host: str,
+        command: str,
+        *,
+        tmux_socket: str | None = None,
+    ) -> None:
+        if host == "winpc":
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/ssh",
+                "winpc",
+                _winpc_tmux_command("pipe-pane", "-t", session_name, command),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            socket_path = str(Path(tmux_socket) if tmux_socket else self.tmux_socket)
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/tmux",
+                "-S", socket_path,
+                "pipe-pane",
+                "-t", session_name,
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode != 0:
+            error = stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(error or "Failed to open worker tmux pipe")
+
+    async def _disable_pipe_pane(
+        self,
+        session_name: str,
+        host: str,
+        *,
+        tmux_socket: str | None = None,
+    ) -> None:
+        if host == "winpc":
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/ssh",
+                "winpc",
+                _winpc_tmux_command("pipe-pane", "-t", session_name),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            socket_path = str(Path(tmux_socket) if tmux_socket else self.tmux_socket)
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/tmux",
+                "-S", socket_path,
+                "pipe-pane",
+                "-t", session_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+
+    async def _create_pipe_reader(self, row: dict[str, Any]) -> WorkerPipeReader:
+        if row["host"] == "winpc":
+            return await self._create_winpc_pipe_reader()
+        return await self._create_local_pipe_reader()
+
+    async def _create_local_pipe_reader(self) -> WorkerPipeReader:
+        pipe_dir = Path(tempfile.mkdtemp(prefix="delamain-pty-"))
+        pipe_path = pipe_dir / "out"
+        os.mkfifo(pipe_path, 0o600)
+        proc = await asyncio.create_subprocess_exec(
+            "/bin/cat",
+            str(pipe_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        async def cleanup() -> None:
+            shutil.rmtree(pipe_dir, ignore_errors=True)
+
+        return WorkerPipeReader(
+            process=proc,
+            pipe_command=f"cat >> {shlex.quote(str(pipe_path))}",
+            cleanup=cleanup,
+        )
+
+    async def _create_winpc_pipe_reader(self) -> WorkerPipeReader:
+        proc = await asyncio.create_subprocess_exec(
+            "/usr/bin/ssh",
+            "winpc",
+            _winpc_shell_command(
+                "set -e; d=$(mktemp -d /tmp/delamain-pty.XXXXXX); "
+                'mkfifo "$d/out"; printf "%s\\n" "$d"'
+            ),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0:
+            error = stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(error or "Failed to create WinPC worker pipe")
+        pipe_dir = stdout.decode("utf-8", errors="replace").strip()
+        pipe_path = f"{pipe_dir}/out"
+        reader = await asyncio.create_subprocess_exec(
+            "/usr/bin/ssh",
+            "winpc",
+            _winpc_shell_command(f"cat {shlex.quote(pipe_path)}"),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        async def cleanup() -> None:
+            cleanup_proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/ssh",
+                "winpc",
+                _winpc_shell_command(f"rm -rf {shlex.quote(pipe_dir)}"),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(cleanup_proc.communicate(), timeout=5)
+
+        return WorkerPipeReader(
+            process=reader,
+            pipe_command=f"cat >> {shlex.quote(pipe_path)}",
+            cleanup=cleanup,
+        )
+
     async def _session_alive(
         self,
         session_name: str,
@@ -678,6 +827,103 @@ def _worker_row_out(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+@dataclass
+class WorkerPipeReader:
+    process: asyncio.subprocess.Process
+    pipe_command: str
+    cleanup: Any
+
+
+class WorkerPtySubscription:
+    def __init__(self, broker: WorkerPtyBroker, queue: asyncio.Queue[str | None]):
+        self._broker = broker
+        self._queue = queue
+        self._closed = False
+
+    async def receive(self) -> str | None:
+        return await self._queue.get()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._broker.unsubscribe(self._queue)
+
+
+class WorkerPtyBroker:
+    def __init__(self, manager: WorkerManager, worker_id: str, row: dict[str, Any]):
+        self.manager = manager
+        self.worker_id = worker_id
+        self.row = row
+        self.reader: WorkerPipeReader | None = None
+        self.queues: set[asyncio.Queue[str | None]] = set()
+        self.task: asyncio.Task[None] | None = None
+        self.closed = False
+
+    async def start(self) -> None:
+        self.reader = await self.manager._create_pipe_reader(self.row)
+        await self.manager._enable_pipe_pane(
+            self.row["tmux_session"],
+            self.row["host"],
+            self.reader.pipe_command,
+            tmux_socket=self.row.get("tmux_socket"),
+        )
+        self.task = asyncio.create_task(self._read_loop())
+
+    def subscribe(self) -> WorkerPtySubscription:
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self.queues.add(queue)
+        return WorkerPtySubscription(self, queue)
+
+    async def unsubscribe(self, queue: asyncio.Queue[str | None]) -> None:
+        self.queues.discard(queue)
+        if not self.queues:
+            await self.close()
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        await self.manager._disable_pipe_pane(
+            self.row["tmux_session"],
+            self.row["host"],
+            tmux_socket=self.row.get("tmux_socket"),
+        )
+        if self.task is not None:
+            self.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
+        if self.reader is not None:
+            if self.reader.process.returncode is None:
+                self.reader.process.terminate()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self.reader.process.wait(), timeout=2)
+                if self.reader.process.returncode is None:
+                    self.reader.process.kill()
+            await self.reader.cleanup()
+        for queue in list(self.queues):
+            queue.put_nowait(None)
+        self.queues.clear()
+        await self.manager._remove_pty_broker(self.worker_id, self)
+
+    async def _read_loop(self) -> None:
+        try:
+            assert self.reader is not None
+            assert self.reader.process.stdout is not None
+            while True:
+                chunk = await self.reader.process.stdout.read(4096)
+                if not chunk:
+                    break
+                text = chunk.decode("utf-8", errors="replace")
+                for queue in list(self.queues):
+                    queue.put_nowait(text)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            for queue in list(self.queues):
+                queue.put_nowait(None)
+
+
 def _terminal_input_chunks(data: str) -> list[tuple[str | None, str | None]]:
     chunks: list[tuple[str | None, str | None]] = []
     literal: list[str] = []
@@ -714,6 +960,10 @@ def _terminal_input_chunks(data: str) -> list[tuple[str | None, str | None]]:
 
 def _winpc_tmux_command(*args: str) -> str:
     return " ".join(("wsl.exe", "-e", "tmux", *(_quote_remote_arg(arg) for arg in args)))
+
+
+def _winpc_shell_command(command: str) -> str:
+    return " ".join(("wsl.exe", "-e", "sh", "-lc", _quote_remote_arg(command)))
 
 
 def _quote_remote_arg(arg: str) -> str:

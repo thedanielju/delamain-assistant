@@ -52,7 +52,7 @@ http://127.0.0.1:8420/api
 
 ### GET /api/health
 
-Returns backend status, SQLite health, LiteLLM version, config summary, and helper availability.
+Returns backend status, SQLite health, LiteLLM version, config summary, helper availability, and cached system resource metrics.
 
 Response:
 
@@ -72,6 +72,37 @@ Response:
     "now": { "path": "...", "exists": true, "executable": true },
     "delamain_ref": { "path": "...", "exists": true, "executable": true },
     "delamain_vault_index": { "path": "...", "exists": true, "executable": true }
+  },
+  "system": {
+    "delamain_backend": {
+      "uptime_seconds": 1234,
+      "rss_mb": 87.5,
+      "cpu_percent_1min": 2.4,
+      "num_threads": 19,
+      "pid": 8420
+    },
+    "host": {
+      "hostname": "serrano",
+      "kernel": "6.8.0-59-generic",
+      "load_avg": { "one": 0.42, "five": 0.37, "fifteen": 0.31 },
+      "memory_total_mb": 31999.1,
+      "memory_available_mb": 24782.4,
+      "disks": [
+        {
+          "mountpoint": "/",
+          "device": "/dev/sda1",
+          "fstype": "ext4",
+          "total_mb": 953356.1,
+          "used_mb": 412883.7,
+          "free_mb": 492098.5,
+          "percent_used": 45.6
+        }
+      ]
+    },
+    "tmux_workers": {
+      "count": 2,
+      "rss_mb_total": 731.4
+    }
   }
 }
 ```

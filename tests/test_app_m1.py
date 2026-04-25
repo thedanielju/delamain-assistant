@@ -14,6 +14,8 @@ def test_health_and_prompt_lifecycle(test_config):
         assert health.status_code == 200
         assert health.json()["sqlite"]["ok"] is True
         assert health.json()["config"]["model_calls_enabled"] is False
+        assert "system" in health.json()
+        assert health.json()["system"]["delamain_backend"]["pid"] > 0
 
         created = client.post("/api/conversations", json={"title": "Test"})
         assert created.status_code == 201

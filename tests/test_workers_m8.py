@@ -77,6 +77,20 @@ def _event_loop() -> asyncio.AbstractEventLoop:
     return _TEST_LOOP
 
 
+class _FakePtySubscription:
+    def __init__(self, chunks: list[str] | None = None):
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        for chunk in chunks or []:
+            self._queue.put_nowait(chunk)
+        self.closed = False
+
+    async def receive(self):
+        return await self._queue.get()
+
+    async def close(self):
+        self.closed = True
+
+
 def test_list_worker_types(test_config):
     app = create_app(test_config)
     with TestClient(app) as client:
@@ -585,7 +599,10 @@ def test_worker_pty_ws_initial_snapshot(test_config):
 
         async def capture_pty_output(self, worker_id, lines=200):
             self.capture_calls.append((worker_id, lines))
-            return "older tmux line\ninitial tmux snapshot\n"
+            return "older tmux line\ninitial tmux snapshot\n\n\n"
+
+        async def subscribe_pty_output(self, worker_id):
+            return _FakePtySubscription()
 
         async def send_terminal_input(self, worker_id, data):
             raise AssertionError("input should not be sent")
@@ -613,6 +630,9 @@ def test_worker_pty_ws_input_calls_manager(test_config):
         async def capture_pty_output(self, worker_id, lines=200):
             return "ready\n"
 
+        async def subscribe_pty_output(self, worker_id):
+            return _FakePtySubscription()
+
         async def send_terminal_input(self, worker_id, data):
             self.inputs.append((worker_id, data))
 
@@ -634,6 +654,9 @@ def test_worker_pty_ws_snapshot_fanout(test_config):
         async def capture_pty_output(self, worker_id, lines=200):
             return f"snapshot for {worker_id}\n"
 
+        async def subscribe_pty_output(self, worker_id):
+            return _FakePtySubscription()
+
         async def send_terminal_input(self, worker_id, data):
             raise AssertionError("input should not be sent")
 
@@ -650,6 +673,28 @@ def test_worker_pty_ws_snapshot_fanout(test_config):
                     "type": "snapshot",
                     "data": "snapshot for worker_live\n",
                 }
+
+
+def test_worker_pty_ws_streams_pipe_data(test_config):
+    class FakePtyManager:
+        async def prepare_pty(self, worker_id):
+            return {"id": worker_id, "status": "running"}
+
+        async def capture_pty_output(self, worker_id, lines=200):
+            return "snapshot\n"
+
+        async def subscribe_pty_output(self, worker_id):
+            return _FakePtySubscription(["pipe chunk\n"])
+
+        async def send_terminal_input(self, worker_id, data):
+            raise AssertionError("input should not be sent")
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        app.state.worker_manager = FakePtyManager()
+        with client.websocket_connect("/api/workers/worker_live/pty") as ws:
+            assert ws.receive_json() == {"type": "snapshot", "data": "snapshot\n"}
+            assert ws.receive_json() == {"type": "data", "data": "pipe chunk\n"}
 
 
 def test_worker_terminal_input_uses_tmux_send_keys_for_local_and_winpc(

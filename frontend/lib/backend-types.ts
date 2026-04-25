@@ -77,6 +77,42 @@ export interface BackendCopilotBudget {
   enforced?: boolean
 }
 
+export interface BackendHealthDisk {
+  mountpoint: string
+  device: string
+  fstype: string
+  total_mb: number
+  used_mb: number
+  free_mb: number
+  percent_used: number
+}
+
+export interface BackendHealthSystem {
+  delamain_backend: {
+    uptime_seconds: number
+    rss_mb: number
+    cpu_percent_1min: number
+    num_threads: number
+    pid: number
+  }
+  host: {
+    hostname: string
+    kernel: string
+    load_avg: {
+      one: number | null
+      five: number | null
+      fifteen: number | null
+    }
+    memory_total_mb: number
+    memory_available_mb: number
+    disks: BackendHealthDisk[]
+  }
+  tmux_workers: {
+    count: number
+    rss_mb_total: number
+  }
+}
+
 export interface BackendHealth {
   status: string
   sqlite: { path: string; ok: boolean }
@@ -89,6 +125,7 @@ export interface BackendHealth {
   }
   helpers: Record<string, { path: string; exists: boolean; executable: boolean }>
   budget?: BackendCopilotBudget
+  system?: BackendHealthSystem
 }
 
 export interface BackendSettings {
