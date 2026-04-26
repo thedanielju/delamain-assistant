@@ -483,7 +483,10 @@ From `frontend/`:
 pnpm lint
 pnpm exec tsc --noEmit
 pnpm build
+pnpm browser:smoke
 ```
+
+`pnpm browser:smoke` expects `PLAYWRIGHT_BASE_URL` to point at a running frontend, defaulting to `http://127.0.0.1:3000`. Set `PLAYWRIGHT_START_SERVER=1` when you want Playwright to start the frontend dev server for the smoke.
 
 ### Live smoke
 

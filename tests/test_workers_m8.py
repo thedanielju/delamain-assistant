@@ -546,6 +546,142 @@ def test_reconcile_on_startup_marks_dead_workers_stopped(test_config, shell_work
             socket_path.unlink()
 
 
+def test_worker_refresh_emits_terminal_finished_once(
+    test_config,
+    shell_worker_registry,
+    tmp_path,
+    monkeypatch,
+):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+
+    async def fake_alive(self, session_name, *, host, tmux_socket=None):
+        return False
+
+    from delamain_backend.workers.manager import WorkerManager
+
+    monkeypatch.setattr(WorkerManager, "_session_alive", fake_alive)
+
+    with TestClient(app) as client:
+        loop = _event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        conv_id = client.post("/api/conversations", json={}).json()["id"]
+        worker_id = "worker_terminal_once"
+        loop.run_until_complete(
+            app.state.db.execute(
+                """
+                INSERT INTO workers(
+                    id, name, worker_type, host, tmux_session, tmux_socket,
+                    conversation_id, command, status
+                ) VALUES (?, 'dead-worker', 'test_shell', 'serrano', 'missing-session', ?, ?, '', 'running')
+                """,
+                (worker_id, str(socket_path), conv_id),
+            )
+        )
+
+        first = loop.run_until_complete(mgr.refresh_status(worker_id))
+        second = loop.run_until_complete(mgr.refresh_status(worker_id))
+        assert first["status"] == "stopped"
+        assert second["status"] == "stopped"
+
+        con = sqlite3.connect(test_config.database.path)
+        events = [
+            json.loads(row[0])
+            for row in con.execute(
+                """
+                SELECT payload FROM events
+                WHERE conversation_id = ? AND type = 'audit'
+                ORDER BY id ASC
+                """,
+                (conv_id,),
+            )
+        ]
+        con.close()
+
+        finished_events = [event for event in events if event["action"] == "worker.finished"]
+        assert len(finished_events) == 1
+        payload = finished_events[0]
+        assert payload["worker_id"] == worker_id
+        assert payload["name"] == "dead-worker"
+        assert payload["worker_type"] == "test_shell"
+        assert payload["host"] == "serrano"
+        assert payload["previous_status"] == "running"
+        assert payload["status"] == "stopped"
+        assert payload["reason"] == "session_missing"
+
+
+def test_worker_start_failure_emits_structured_failed_event(
+    test_config,
+    shell_worker_registry,
+    tmp_path,
+    monkeypatch,
+):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+
+    class FakeProc:
+        returncode = 127
+
+        async def communicate(self):
+            return b"missing stdout\n", b"missing stderr\n"
+
+    async def fake_start(self, wtype, session_name, cwd):
+        return FakeProc()
+
+    from delamain_backend.workers.manager import WorkerManager
+
+    monkeypatch.setattr(WorkerManager, "_start_session_process", fake_start)
+
+    with TestClient(app) as client:
+        loop = _event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        conv_id = client.post("/api/conversations", json={}).json()["id"]
+
+        result = loop.run_until_complete(
+            mgr.start("test_shell", name="failed-start", conversation_id=conv_id)
+        )
+        assert result["status"] == "failed"
+        assert result["error_message"]
+
+        con = sqlite3.connect(test_config.database.path)
+        events = [
+            json.loads(row[0])
+            for row in con.execute(
+                """
+                SELECT payload FROM events
+                WHERE conversation_id = ? AND type = 'audit'
+                ORDER BY id ASC
+                """,
+                (conv_id,),
+            )
+        ]
+        con.close()
+
+        failed_events = [event for event in events if event["action"] == "worker.failed"]
+        assert len(failed_events) == 1
+        payload = failed_events[0]
+        assert payload["worker_id"] == result["id"]
+        assert payload["name"] == "failed-start"
+        assert payload["worker_type"] == "test_shell"
+        assert payload["host"] == "serrano"
+        assert payload["previous_status"] == "starting"
+        assert payload["status"] == "failed"
+        assert payload["reason"] == "start_command_failed"
+        assert "missing stderr" in payload["error"]
+
+
 @tmux_required
 def test_conversation_scoped_worker_list(test_config, shell_worker_registry, tmp_path):
     socket_path = tmp_path / "test-workers.sock"

@@ -13,6 +13,8 @@ def test_health_and_prompt_lifecycle(test_config):
         health = client.get("/api/health")
         assert health.status_code == 200
         assert health.json()["sqlite"]["ok"] is True
+        assert health.json()["sqlite"]["wal_verified"] is True
+        assert health.json()["sqlite"]["write"]["busy_timeout_ms"] == 5000
         assert health.json()["config"]["model_calls_enabled"] is False
         assert "system" in health.json()
         assert health.json()["system"]["delamain_backend"]["pid"] > 0

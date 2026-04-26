@@ -59,7 +59,25 @@ Response:
 ```json
 {
   "status": "ok",
-  "sqlite": { "path": "...", "ok": true },
+  "sqlite": {
+    "path": "...",
+    "ok": true,
+    "wal_verified": true,
+    "write": {
+      "journal_mode": "wal",
+      "busy_timeout_ms": 5000,
+      "synchronous": 1,
+      "temp_store": 2,
+      "foreign_keys": true
+    },
+    "read": {
+      "journal_mode": "wal",
+      "busy_timeout_ms": 5000,
+      "synchronous": 1,
+      "temp_store": 2,
+      "foreign_keys": true
+    }
+  },
   "litellm": { "version": "1.83.8", "known_bad_blocked": true, "error": null },
   "config": {
     "host": "127.0.0.1",
@@ -1606,7 +1624,8 @@ Known audit actions:
 | `context.file_updated` | Context file written |
 | `model.reported_route_mismatch` | Provider route mismatch |
 | `worker.started` | Worker started |
-| `worker.failed` | Worker start failed |
+| `worker.finished` | Worker reached a terminal stopped state |
+| `worker.failed` | Worker reached a terminal failed state |
 | `worker.stop_requested` | Worker stop initiated |
 | `worker.killed` | Worker force killed |
 

@@ -875,7 +875,9 @@ Reasons:
 
 - DELAMAIN is single-user
 - local-first state is desired
-- WAL is already enabled
+- WAL is enabled and now verified at startup
+- read traffic has a dedicated SQLite connection
+- writes remain serialized through the backend `Database` lock
 - the current graph index is mostly file-backed JSON plus lightweight relational state
 - operational complexity stays low
 - backups and inspection are simple
@@ -1137,6 +1139,7 @@ Frontend:
 - `cd frontend && pnpm lint`
 - `cd frontend && pnpm exec tsc --noEmit`
 - `cd frontend && pnpm build`
+- `cd frontend && pnpm browser:smoke`
 - browser smoke for graph/list/preview/maintenance/tray
 - screenshots for desktop/mobile once Atlas exists
 

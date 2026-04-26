@@ -23,6 +23,7 @@ CAPTURE_LINES = 200
 SUPPORTED_WORKER_HOSTS = {"serrano", "winpc"}
 PTY_CAPTURE_LINES = 200
 PTY_SUBSCRIBER_MAX_BUFFER = 64 * 1024
+WORKER_TERMINAL_STATUSES = {"stopped", "failed"}
 
 
 _TERMINAL_INPUT_KEYS = {
@@ -135,7 +136,7 @@ class WorkerManager:
                     stdout=stdout.decode("utf-8", errors="replace"),
                     returncode=proc.returncode,
                 )
-                await self._mark_failed(worker_id, error)
+                await self._mark_failed(worker_id, error, reason="start_command_failed")
                 return await self._worker_out(worker_id)
         except asyncio.TimeoutError:
             # tmux server cold-start can be slow; check if session came up
@@ -147,10 +148,11 @@ class WorkerManager:
                         "start worker session",
                         "tmux session creation timed out",
                     ),
+                    reason="start_timeout",
                 )
                 return await self._worker_out(worker_id)
         except Exception as exc:
-            await self._mark_failed(worker_id, str(exc))
+            await self._mark_failed(worker_id, str(exc), reason="start_exception")
             return await self._worker_out(worker_id)
 
         alive = await self._session_alive(session_name, host=wtype.host)
@@ -166,14 +168,19 @@ class WorkerManager:
                 (worker_id,),
             )
         else:
-            await self._mark_failed(worker_id, "Session exited immediately after creation")
+            await self._mark_failed(
+                worker_id,
+                "Session exited immediately after creation",
+                reason="session_exited_immediately",
+            )
 
-        await self._audit(
-            conversation_id,
-            f"worker.{'started' if status == 'running' else 'failed'}",
-            f"Worker {name} ({wtype.id}) {status}",
-            {"worker_id": worker_id, "name": name, "worker_type": wtype.id, "status": status},
-        )
+        if status == "running":
+            await self._audit(
+                conversation_id,
+                "worker.started",
+                f"Worker {name} ({wtype.id}) running",
+                {"worker_id": worker_id, "name": name, "worker_type": wtype.id, "status": status},
+            )
         return await self._worker_out(worker_id)
 
     async def stop(self, worker_id: str) -> dict[str, Any]:
@@ -215,23 +222,14 @@ class WorkerManager:
                 """,
                 (worker_id,),
             )
-        else:
-            await self.db.execute(
-                """
-                UPDATE workers
-                SET status = 'stopped',
-                    stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                """,
-                (worker_id,),
-            )
         await self._audit(
             row.get("conversation_id"),
             "worker.stop_requested",
             f"Worker {row['name']} stop requested",
             {"worker_id": worker_id, "name": row["name"]},
         )
+        if not alive:
+            await self._mark_stopped(row, reason="stop_requested")
         return await self._worker_out(worker_id)
 
     async def kill(self, worker_id: str) -> dict[str, Any]:
@@ -243,22 +241,13 @@ class WorkerManager:
             await self._kill_session(session_name, row["host"], tmux_socket=row.get("tmux_socket"))
         except Exception:
             pass
-        await self.db.execute(
-            """
-            UPDATE workers
-            SET status = 'stopped',
-                stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            WHERE id = ?
-            """,
-            (worker_id,),
-        )
         await self._audit(
             row.get("conversation_id"),
             "worker.killed",
             f"Worker {row['name']} killed",
             {"worker_id": worker_id, "name": row["name"]},
         )
+        await self._mark_stopped(row, reason="killed")
         return await self._worker_out(worker_id)
 
     async def capture_output(self, worker_id: str, lines: int = CAPTURE_LINES) -> dict[str, Any]:
@@ -301,16 +290,7 @@ class WorkerManager:
             tmux_socket=row.get("tmux_socket"),
         )
         if not alive:
-            await self.db.execute(
-                """
-                UPDATE workers
-                SET status = 'stopped',
-                    stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                """,
-                (worker_id,),
-            )
+            await self._mark_stopped(row, reason="session_missing")
             raise ValueError("Worker tmux session is gone")
         return row
 
@@ -456,16 +436,7 @@ class WorkerManager:
                 tmux_socket=row.get("tmux_socket"),
             )
             if not alive and row["status"] != "stopped":
-                await self.db.execute(
-                    """
-                    UPDATE workers
-                    SET status = 'stopped',
-                        stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                    WHERE id = ?
-                    """,
-                    (worker_id,),
-                )
+                await self._mark_stopped(row, reason="session_missing")
         return await self._worker_out(
             worker_id,
             include_readiness=include_readiness,
@@ -498,16 +469,7 @@ class WorkerManager:
                     )
                 continue
             stopped += 1
-            await self.db.execute(
-                """
-                UPDATE workers
-                SET status = 'stopped',
-                    stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                """,
-                (row["id"],),
-            )
+            await self._mark_stopped(row, reason="startup_reconcile")
         return {"checked": len(rows), "alive": alive, "stopped": stopped}
 
     async def _start_session_process(
@@ -857,7 +819,33 @@ class WorkerManager:
         for worker in workers:
             worker["readiness"] = readiness_by_type.get(worker["worker_type"])
 
-    async def _mark_failed(self, worker_id: str, error: str) -> None:
+    async def _mark_stopped(self, row: dict[str, Any], *, reason: str) -> None:
+        previous_status = row["status"]
+        if previous_status in WORKER_TERMINAL_STATUSES:
+            return
+        await self.db.execute(
+            """
+            UPDATE workers
+            SET status = 'stopped',
+                stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (row["id"],),
+        )
+        await self._audit_worker_terminal(
+            row,
+            action="worker.finished",
+            status="stopped",
+            previous_status=previous_status,
+            reason=reason,
+        )
+
+    async def _mark_failed(self, worker_id: str, error: str, *, reason: str) -> None:
+        row = await self._get_worker(worker_id)
+        previous_status = row["status"]
+        if previous_status in WORKER_TERMINAL_STATUSES:
+            return
         await self.db.execute(
             """
             UPDATE workers
@@ -868,6 +856,42 @@ class WorkerManager:
             WHERE id = ?
             """,
             (error, worker_id),
+        )
+        await self._audit_worker_terminal(
+            row,
+            action="worker.failed",
+            status="failed",
+            previous_status=previous_status,
+            reason=reason,
+            error=error,
+        )
+
+    async def _audit_worker_terminal(
+        self,
+        row: dict[str, Any],
+        *,
+        action: str,
+        status: str,
+        previous_status: str,
+        reason: str,
+        error: str | None = None,
+    ) -> None:
+        details: dict[str, Any] = {
+            "worker_id": row["id"],
+            "name": row["name"],
+            "worker_type": row["worker_type"],
+            "host": row["host"],
+            "previous_status": previous_status,
+            "status": status,
+            "reason": reason,
+        }
+        if error:
+            details["error"] = error
+        await self._audit(
+            row.get("conversation_id"),
+            action,
+            f"Worker {row['name']} ({row['worker_type']}) transitioned from {previous_status} to {status}",
+            details,
         )
 
     async def _audit(

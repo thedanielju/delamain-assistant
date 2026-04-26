@@ -14,6 +14,7 @@ from delamain_backend.dependencies import assert_litellm_version_allowed
 from delamain_backend.events import EventBus
 from delamain_backend.maintenance import run_startup_cleanup
 from delamain_backend.security.auth import CloudflareAccessValidator, install_auth_middleware
+from delamain_backend.structured_logging import configure_logging, install_request_logging
 from delamain_backend.vault_heartbeat import VaultIndexHeartbeat
 from delamain_backend.workers import WorkerManager, default_worker_registry
 
@@ -31,6 +32,7 @@ def create_app(config: AppConfig | None = None, model_client: ModelClient | None
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         loaded_config = config or load_config()
+        configure_logging()
         assert_litellm_version_allowed()
         db = Database(loaded_config.database.path)
         await db.connect()
@@ -87,6 +89,7 @@ def create_app(config: AppConfig | None = None, model_client: ModelClient | None
             await db.close()
 
     app = FastAPI(title="DELAMAIN Backend", version="0.1.0", lifespan=lifespan)
+    install_request_logging(app)
     install_auth_middleware(app, CloudflareAccessValidator((config or load_config()).auth))
     app.include_router(api_router)
     return app

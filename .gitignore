@@ -9,6 +9,8 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+frontend/test-results/
+frontend/playwright-report/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

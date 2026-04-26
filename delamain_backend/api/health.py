@@ -33,12 +33,13 @@ async def health(config: AppConfig = Depends(get_config), db: Database = Depends
             config.paths.llm_workspace / "bin" / "delamain-vault-index"
         ),
     }
-    sqlite_ok = await db.healthcheck()
+    sqlite = await db.health_report()
+    sqlite_ok = bool(sqlite["ok"])
     budget = await copilot_budget_status(config, db)
     system = await system_status(db)
     return {
         "status": "ok" if sqlite_ok and litellm_allowed else "degraded",
-        "sqlite": {"path": str(config.database.path), "ok": sqlite_ok},
+        "sqlite": sqlite,
         "litellm": {
             "version": litellm_version,
             "known_bad_blocked": litellm_allowed,
