@@ -565,7 +565,7 @@ export function SyncthingPanel({
           <>
             <p className="text-[10px] font-mono text-[#555555] leading-relaxed">
               Pull/scan errors reported by Syncthing. Not the same as file conflicts.
-              Resolve on the originating host's Syncthing Web UI (default port 8384).
+              Resolve on the originating host&apos;s Syncthing Web UI (default port 8384).
             </p>
             {erroredFolders.map(({ host, folder }) => (
               <div
@@ -586,7 +586,7 @@ export function SyncthingPanel({
                     state {folder.state ?? 'unknown'}
                   </p>
                   <p className="text-[9px] font-mono text-[#3a3a3a] mt-1">
-                    Detailed error text is visible in {host}'s Syncthing Web UI.
+                    Detailed error text is visible in {host}&apos;s Syncthing Web UI.
                   </p>
                 </div>
                 <a

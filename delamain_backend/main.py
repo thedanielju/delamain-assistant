@@ -14,6 +14,7 @@ from delamain_backend.dependencies import assert_litellm_version_allowed
 from delamain_backend.events import EventBus
 from delamain_backend.maintenance import run_startup_cleanup
 from delamain_backend.security.auth import CloudflareAccessValidator, install_auth_middleware
+from delamain_backend.vault_heartbeat import VaultIndexHeartbeat
 from delamain_backend.workers import WorkerManager, default_worker_registry
 
 
@@ -55,13 +56,29 @@ def create_app(config: AppConfig | None = None, model_client: ModelClient | None
         app.state.worker_registry = worker_registry
         app.state.worker_manager = worker_manager
         app.state.event_reaper_task = asyncio.create_task(_reap_event_subscribers(bus))
+        app.state.vault_index_heartbeat = VaultIndexHeartbeat(loaded_config, db=db)
+        app.state.vault_index_heartbeat_task = asyncio.create_task(
+            app.state.vault_index_heartbeat.run_forever()
+        )
         app.state.startup_cleanup = run_startup_cleanup(loaded_config)
         await run_manager.recover_on_startup()
         app.state.worker_reconciliation = await worker_manager.reconcile_on_startup()
         try:
             yield
         finally:
+            enrichment_task = getattr(app.state, "vault_enrichment_batch_task", None)
+            if enrichment_task is not None and not enrichment_task.done():
+                enrichment_task.cancel()
+                try:
+                    await enrichment_task
+                except asyncio.CancelledError:
+                    pass
             await run_manager.shutdown()
+            app.state.vault_index_heartbeat_task.cancel()
+            try:
+                await app.state.vault_index_heartbeat_task
+            except asyncio.CancelledError:
+                pass
             app.state.event_reaper_task.cancel()
             try:
                 await app.state.event_reaper_task

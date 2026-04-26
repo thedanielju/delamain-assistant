@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from delamain_backend.config import AppConfig
+from delamain_backend.security.vault import load_selected_context_notes
 
 CLOCK_BLOCK_START = "BEGIN:clock"
 CLOCK_BLOCK_END = "END:clock"
@@ -62,7 +63,13 @@ def _file_metadata(
     }
 
 
-def load_context_for_run(config: AppConfig, context_mode: str) -> LoadedContext:
+def load_context_for_run(
+    config: AppConfig,
+    context_mode: str,
+    *,
+    selected_context_paths: list[str] | None = None,
+    sensitive_unlocked: bool = False,
+) -> LoadedContext:
     system_path = config.paths.system_context
     system_text = system_path.read_text(encoding="utf-8") if system_path.exists() else ""
     refreshed_system_text, clock_refresh = _refresh_system_clock_context(config, system_text)
@@ -91,6 +98,14 @@ def load_context_for_run(config: AppConfig, context_mode: str) -> LoadedContext:
             prompt_messages.append(
                 {"role": "system", "content": continuity.read_text(encoding="utf-8")}
             )
+    if selected_context_paths:
+        selected_items, selected_messages = load_selected_context_notes(
+            config,
+            selected_context_paths,
+            sensitive_unlocked=sensitive_unlocked,
+        )
+        items.extend(selected_items)
+        prompt_messages.extend(selected_messages)
     return LoadedContext(
         items=items,
         prompt_messages=prompt_messages,

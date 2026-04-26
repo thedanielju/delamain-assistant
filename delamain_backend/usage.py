@@ -57,6 +57,7 @@ async def usage_summary(config: AppConfig, db: Database) -> dict[str, Any]:
                 "usage_estimated": copilot["usage_estimated"],
                 "usage_source": copilot["usage_source"],
                 "last_observed_at": copilot["last_observed_at"],
+                "reset": _copilot_reset_details(copilot["period"]),
             },
         },
         _stub_provider(
@@ -95,6 +96,7 @@ async def usage_summary(config: AppConfig, db: Database) -> dict[str, Any]:
                 "remaining_credits": openrouter_credits.get("remaining_credits"),
                 "total_credits": openrouter_credits.get("credits"),
                 "total_usage": openrouter_credits.get("total_usage"),
+                "reset": _unknown_reset_details(),
             },
         },
     ]
@@ -168,8 +170,186 @@ def _stub_provider(
             "currency": billing.get("currency"),
             "source": billing.get("source"),
             "subscription": subscription,
+            "reset": _subscription_reset_details(subscription),
         },
     }
+
+
+def _copilot_reset_details(period: str | None) -> dict[str, Any]:
+    if period != "current_month_utc":
+        return _unknown_reset_details()
+    current_window_started_at = _month_start_datetime()
+    next_reset_at = _next_month_start_datetime(current_window_started_at)
+    return {
+        "status": "known",
+        "source": "current_month_utc",
+        "window_kind": "calendar_month_utc",
+        "timezone": "UTC",
+        "current_window_started_at": _isoformat_utc(current_window_started_at),
+        "current_window_ends_at": _isoformat_utc(next_reset_at),
+        "next_reset_at": _isoformat_utc(next_reset_at),
+        "next_reset_date": next_reset_at.date().isoformat(),
+    }
+
+
+def _subscription_reset_details(subscription: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(subscription, dict):
+        return _unknown_reset_details()
+    for value in _subscription_reset_candidates(subscription):
+        normalized = _normalize_reset_mapping(value)
+        if normalized["status"] == "known":
+            return normalized
+    return _unknown_reset_details(source="subscription_probe")
+
+
+def _subscription_reset_candidates(subscription: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = [subscription]
+    reset = subscription.get("reset")
+    if isinstance(reset, dict):
+        candidates.append(reset)
+    for host in subscription.get("hosts") or []:
+        if isinstance(host, dict):
+            candidates.append(host)
+            host_reset = host.get("reset")
+            if isinstance(host_reset, dict):
+                candidates.append(host_reset)
+    return candidates
+
+
+def _normalize_reset_mapping(data: dict[str, Any]) -> dict[str, Any]:
+    current_window_started_at = _normalized_datetime(
+        _first_present(
+            data,
+            "current_window_started_at",
+            "current_period_started_at",
+            "current_period_start",
+            "period_start",
+            "started_at",
+        )
+    )
+    current_window_ends_at = _normalized_datetime(
+        _first_present(
+            data,
+            "current_window_ends_at",
+            "current_period_ends_at",
+            "current_period_end",
+            "period_end",
+            "ends_at",
+        )
+    )
+    next_reset_at = _normalized_datetime(
+        _first_present(
+            data,
+            "next_reset_at",
+            "reset_at",
+            "renews_at",
+            "renewal_at",
+            "renewal_datetime",
+        )
+    )
+    next_reset_date = _normalized_date(
+        _first_present(
+            data,
+            "next_reset_date",
+            "reset_date",
+            "renews_on",
+            "renewal_date",
+            "renewal_day",
+        )
+    )
+    if next_reset_date is None and next_reset_at is not None:
+        next_reset_date = next_reset_at[:10]
+    window_kind = _normalized_string(
+        _first_present(data, "window_kind", "reset_window_kind")
+    )
+    timezone = _normalized_string(
+        _first_present(data, "timezone", "reset_timezone", "tz")
+    )
+    source = _normalized_string(_first_present(data, "source", "reset_source"))
+    known = any(
+        (
+            current_window_started_at,
+            current_window_ends_at,
+            next_reset_at,
+            next_reset_date,
+        )
+    )
+    return {
+        "status": "known" if known else "unknown",
+        "source": source or "subscription_probe",
+        "window_kind": window_kind,
+        "timezone": timezone,
+        "current_window_started_at": current_window_started_at,
+        "current_window_ends_at": current_window_ends_at,
+        "next_reset_at": next_reset_at,
+        "next_reset_date": next_reset_date,
+    }
+
+
+def _unknown_reset_details(*, source: str | None = None) -> dict[str, Any]:
+    return {
+        "status": "unknown",
+        "source": source,
+        "window_kind": None,
+        "timezone": None,
+        "current_window_started_at": None,
+        "current_window_ends_at": None,
+        "next_reset_at": None,
+        "next_reset_date": None,
+    }
+
+
+def _normalized_string(value: Any) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def _normalized_datetime(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        normalized = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        return _isoformat_utc(normalized)
+    if isinstance(value, (int, float)):
+        return _isoformat_utc(datetime.fromtimestamp(float(value), UTC))
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or "T" not in stripped:
+        return None
+    candidate = stripped[:-1] + "+00:00" if stripped.endswith("Z") else stripped
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    normalized = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return _isoformat_utc(normalized)
+
+
+def _normalized_date(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        normalized = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        return normalized.date().isoformat()
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), UTC).date().isoformat()
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if "T" in stripped:
+        normalized = _normalized_datetime(stripped)
+        if not normalized:
+            return None
+        return normalized[:10]
+    try:
+        return datetime.fromisoformat(stripped).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _isoformat_utc(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _openrouter_credits(config: AppConfig) -> dict[str, Any]:
@@ -328,6 +508,27 @@ def _month_bounds() -> tuple[str, str]:
 def _month_start_datetime() -> datetime:
     now = datetime.now(UTC)
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _next_month_start_datetime(value: datetime) -> datetime:
+    if value.month == 12:
+        return value.replace(
+            year=value.year + 1,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    return value.replace(
+        month=value.month + 1,
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
 
 
 def _secret(config: AppConfig, name: str) -> str | None:

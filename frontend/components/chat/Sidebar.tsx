@@ -330,7 +330,7 @@ export function Sidebar({
           }}
           role="button"
           tabIndex={0}
-          aria-selected={isSelected}
+          aria-pressed={isSelected}
           onKeyDown={(e) => {
             if (isRenaming) return
             if (e.key === 'Enter' || e.key === ' ') {

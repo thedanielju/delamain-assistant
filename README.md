@@ -480,7 +480,8 @@ pytest -q
 From `frontend/`:
 
 ```bash
-pnpm tsc --noEmit
+pnpm lint
+pnpm exec tsc --noEmit
 pnpm build
 ```
 

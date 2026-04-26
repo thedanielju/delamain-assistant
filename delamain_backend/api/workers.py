@@ -28,19 +28,32 @@ class WorkerRenameRequest(BaseModel):
 
 
 @router.get("/workers/types")
-async def list_worker_types(registry: WorkerTypeRegistry = Depends(get_worker_registry)):
-    return {"types": registry.list()}
+async def list_worker_types(
+    include_readiness: bool = Query(False),
+    refresh_readiness: bool = Query(False),
+    registry: WorkerTypeRegistry = Depends(get_worker_registry),
+):
+    return {
+        "types": await registry.list_public(
+            include_readiness=include_readiness,
+            refresh_readiness=refresh_readiness,
+        )
+    }
 
 
 @router.get("/workers")
 async def list_workers(
     status: str | None = Query(None),
     conversation_id: str | None = Query(None),
+    include_readiness: bool = Query(False),
+    refresh_readiness: bool = Query(False),
     mgr: WorkerManager = Depends(get_worker_manager),
 ):
     workers = await mgr.list_workers(
         status_filter=status,
         conversation_id=conversation_id,
+        include_readiness=include_readiness,
+        refresh_readiness=refresh_readiness,
     )
     return {"workers": workers}
 
@@ -64,12 +77,22 @@ async def start_worker(
 async def get_worker(
     worker_id: str,
     refresh: bool = Query(False),
+    include_readiness: bool = Query(False),
+    refresh_readiness: bool = Query(False),
     mgr: WorkerManager = Depends(get_worker_manager),
 ):
     try:
         if refresh:
-            return await mgr.refresh_status(worker_id)
-        return await mgr.get_worker(worker_id)
+            return await mgr.refresh_status(
+                worker_id,
+                include_readiness=include_readiness,
+                refresh_readiness=refresh_readiness,
+            )
+        return await mgr.get_worker(
+            worker_id,
+            include_readiness=include_readiness,
+            refresh_readiness=refresh_readiness,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -203,9 +226,27 @@ async def _worker_pty_output_loop(
             )
 
         while True:
-            data = await subscription.receive()
-            if data:
-                await websocket.send_json({"type": "data", "data": data})
+            event = await subscription.receive()
+            if isinstance(event, str):
+                await websocket.send_json({"type": "data", "data": event})
+                continue
+            if event is None:
+                return
+            if event.kind == "closed":
+                if event.data:
+                    frame = {"type": "data", "data": event.data}
+                    if event.dropped_chunks:
+                        frame["dropped_chunks"] = event.dropped_chunks
+                        frame["dropped_bytes"] = event.dropped_bytes
+                    await websocket.send_json(frame)
+                if event.message:
+                    await _send_pty_error_and_close(websocket, event.message, code=1011)
+                return
+            frame = {"type": "data", "data": event.data}
+            if event.dropped_chunks:
+                frame["dropped_chunks"] = event.dropped_chunks
+                frame["dropped_bytes"] = event.dropped_bytes
+            await websocket.send_json(frame)
     except WebSocketDisconnect:
         return
     except ValueError as exc:

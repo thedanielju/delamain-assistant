@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { Send, Lock, Paperclip, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { DirectActionsBar } from './DirectActionsBar'
@@ -63,6 +63,7 @@ interface InputBarProps {
   onToggleIncognito: () => void
   onToggleSensitive: () => void
   onRunDirectAction: (actionId: string) => void
+  onDraftChange?: (value: string) => void
   conversationId?: string
 }
 
@@ -76,6 +77,7 @@ export function InputBar({
   onToggleIncognito,
   onToggleSensitive,
   onRunDirectAction,
+  onDraftChange,
   conversationId,
 }: InputBarProps) {
   const [value, setValue] = useState('')
@@ -161,6 +163,12 @@ export function InputBar({
   }, [])
 
   const canSend = value.trim().length > 0
+
+  useEffect(() => {
+    if (!onDraftChange) return
+    const handle = window.setTimeout(() => onDraftChange(value), 350)
+    return () => window.clearTimeout(handle)
+  }, [onDraftChange, value])
 
   return (
     <div

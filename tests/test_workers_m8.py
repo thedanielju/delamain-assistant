@@ -285,6 +285,13 @@ def test_winpc_worker_uses_ssh_wsl_tmux_adapter(test_config, shell_worker_regist
 
     monkeypatch.setattr(WorkerManager, "_start_session_process", fake_start)
     monkeypatch.setattr(WorkerManager, "_session_alive", fake_alive)
+    monkeypatch.setattr(
+        shell_worker_registry,
+        "readiness_for",
+        lambda worker_type_id, refresh=False: asyncio.sleep(
+            0, result={"status": "ready", "reason": None}
+        ),
+    )
 
     with TestClient(app):
         loop = _event_loop()
@@ -302,6 +309,42 @@ def test_winpc_worker_uses_ssh_wsl_tmux_adapter(test_config, shell_worker_regist
         assert _winpc_tmux_command("has-session", "-t", "dw-worker_abc") == (
             "wsl.exe -e tmux has-session -t dw-worker_abc"
         )
+
+
+def test_winpc_worker_start_rejects_unavailable_preflight(
+    test_config,
+    shell_worker_registry,
+    tmp_path,
+    monkeypatch,
+):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+
+    monkeypatch.setattr(
+        shell_worker_registry,
+        "readiness_for",
+        lambda worker_type_id, refresh=False: asyncio.sleep(
+            0,
+            result={
+                "status": "unavailable",
+                "reason": "WinPC SSH unavailable: permission denied",
+            },
+        ),
+    )
+
+    with TestClient(app):
+        from delamain_backend.workers.manager import WorkerManager
+
+        loop = _event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        with pytest.raises(ValueError, match="WinPC SSH unavailable"):
+            loop.run_until_complete(mgr.start("remote_worker", name="winpc-blocked"))
 
 
 def test_local_worker_tmux_new_session_sets_initial_cwd(
@@ -612,6 +655,147 @@ def test_worker_api_endpoints(test_config):
         assert id(app.state.worker_manager) == manager_id
 
 
+def test_winpc_readiness_reports_missing_command(shell_worker_registry, monkeypatch):
+    import delamain_backend.workers.registry as worker_registry_module
+
+    async def fake_run_probe(argv, *, timeout_seconds=6.0, env=None):
+        return {
+            "exit_code": 23,
+            "stdout": "__DELAMAIN_CHECK__:command_missing\n",
+            "stderr": "",
+            "duration_ms": 12,
+        }
+
+    monkeypatch.setattr(worker_registry_module, "_run_probe", fake_run_probe)
+    readiness = _event_loop().run_until_complete(
+        shell_worker_registry.readiness_for("remote_worker", refresh=True)
+    )
+    assert readiness["status"] == "unavailable"
+    assert readiness["checks"]["command"]["status"] == "unavailable"
+    assert "Worker command is not available" in readiness["checks"]["command"]["reason"]
+
+
+def test_winpc_codex_readiness_reports_unauthenticated(test_config, monkeypatch):
+    import delamain_backend.workers.registry as worker_registry_module
+
+    calls = 0
+
+    async def fake_run_probe(argv, *, timeout_seconds=6.0, env=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "exit_code": 0,
+                "stdout": "__DELAMAIN_CHECK__:resolved=/home/daniel/.local/bin/codex-wsl\n",
+                "stderr": "",
+                "duration_ms": 8,
+            }
+        return {
+            "exit_code": 0,
+            "stdout": "codex 1.0.0\nNot logged in\n",
+            "stderr": "",
+            "duration_ms": 9,
+        }
+
+    monkeypatch.setattr(worker_registry_module, "_run_probe", fake_run_probe)
+
+    app = create_app(test_config)
+    with TestClient(app):
+        readiness = _event_loop().run_until_complete(
+            app.state.worker_registry.readiness_for("winpc_codex_cli", refresh=True)
+        )
+    assert readiness["status"] == "degraded"
+    assert readiness["checks"]["auth"]["status"] == "unauthenticated"
+    assert readiness["checks"]["command"]["resolved"] == "/home/daniel/.local/bin/codex-wsl"
+
+
+def test_worker_types_endpoint_includes_readiness(test_config, monkeypatch):
+    async def fake_readiness_for(self, worker_type_id, *, refresh=False):
+        return {
+            "status": "ready",
+            "reason": None,
+            "cached": not refresh,
+            "checked_at": "2026-04-25T00:00:00Z",
+            "host": "serrano",
+            "family": "shell",
+            "checks": {
+                "launcher": {"status": "ok", "adapter": "tmux", "reason": None},
+                "transport": {"status": "ok", "reason": None},
+                "tmux": {"status": "ok", "reason": None},
+                "command": {"status": "ok", "reason": None, "resolved": "/bin/bash"},
+                "auth": {"status": "not_applicable", "reason": "shell worker"},
+            },
+            "ttl_seconds": 30.0,
+        }
+
+    monkeypatch.setattr(WorkerTypeRegistry, "readiness_for", fake_readiness_for)
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        resp = client.get("/api/workers/types?include_readiness=true")
+        assert resp.status_code == 200
+        shell_type = next(item for item in resp.json()["types"] if item["id"] == "shell")
+        assert shell_type["readiness"]["status"] == "ready"
+        assert shell_type["readiness"]["checks"]["auth"]["status"] == "not_applicable"
+
+
+def test_worker_types_endpoint_skips_readiness_by_default(test_config, monkeypatch):
+    async def fail_readiness_for(self, worker_type_id, *, refresh=False):
+        raise AssertionError("readiness should be opt-in")
+
+    monkeypatch.setattr(WorkerTypeRegistry, "readiness_for", fail_readiness_for)
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        resp = client.get("/api/workers/types")
+        assert resp.status_code == 200
+        shell_type = next(item for item in resp.json()["types"] if item["id"] == "shell")
+        assert "readiness" not in shell_type
+
+
+def test_worker_list_can_include_readiness(test_config, monkeypatch):
+    async def fake_readiness_for(self, worker_type_id, *, refresh=False):
+        assert worker_type_id == "shell"
+        return {
+            "status": "ready",
+            "reason": None,
+            "cached": True,
+            "checked_at": "2026-04-25T00:00:00Z",
+            "host": "serrano",
+            "family": "shell",
+            "checks": {"command": {"status": "ok", "reason": None, "resolved": "/bin/bash"}},
+            "ttl_seconds": 30.0,
+        }
+
+    monkeypatch.setattr(WorkerTypeRegistry, "readiness_for", fake_readiness_for)
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        loop = _event_loop()
+        loop.run_until_complete(
+            app.state.db.execute(
+                """
+                INSERT INTO workers(
+                    id, name, worker_type, host, tmux_session, tmux_socket, command, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "worker_ready_list",
+                    "ready-list",
+                    "shell",
+                    "serrano",
+                    "dw-worker_ready_list",
+                    "/tmp/test.sock",
+                    "/bin/bash --login",
+                    "running",
+                ),
+            )
+        )
+        resp = client.get("/api/workers?include_readiness=true")
+        assert resp.status_code == 200
+        assert resp.json()["workers"][0]["readiness"]["status"] == "ready"
+
+
 def test_worker_pty_ws_missing_or_stopped_rejected(test_config):
     class FakePtyManager:
         def __init__(self, message: str):
@@ -747,6 +931,131 @@ def test_worker_pty_ws_streams_pipe_data(test_config):
         with client.websocket_connect("/api/workers/worker_live/pty") as ws:
             assert ws.receive_json() == {"type": "snapshot", "data": "snapshot\n"}
             assert ws.receive_json() == {"type": "data", "data": "pipe chunk\n"}
+
+
+def test_worker_pty_ws_reports_drop_accounting(test_config):
+    class FakeEvent:
+        def __init__(self, kind, data="", dropped_chunks=0, dropped_bytes=0, message=None):
+            self.kind = kind
+            self.data = data
+            self.dropped_chunks = dropped_chunks
+            self.dropped_bytes = dropped_bytes
+            self.message = message
+
+    class FakeSubscription:
+        def __init__(self):
+            self._events = asyncio.Queue()
+            self._events.put_nowait(FakeEvent("data", "chunk\n", dropped_chunks=2, dropped_bytes=8192))
+            self._events.put_nowait(FakeEvent("closed"))
+
+        async def receive(self):
+            return await self._events.get()
+
+        async def close(self):
+            return None
+
+    class FakePtyManager:
+        async def prepare_pty(self, worker_id):
+            return {"id": worker_id, "status": "running"}
+
+        async def capture_pty_output(self, worker_id, lines=200):
+            return "snapshot\n"
+
+        async def subscribe_pty_output(self, worker_id):
+            return FakeSubscription()
+
+        async def send_terminal_input(self, worker_id, data):
+            raise AssertionError("input should not be sent")
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        app.state.worker_manager = FakePtyManager()
+        with client.websocket_connect("/api/workers/worker_live/pty") as ws:
+            assert ws.receive_json() == {"type": "snapshot", "data": "snapshot\n"}
+            assert ws.receive_json() == {
+                "type": "data",
+                "data": "chunk\n",
+                "dropped_chunks": 2,
+                "dropped_bytes": 8192,
+            }
+
+
+def test_worker_pty_subscription_bounds_buffer_and_tracks_drops():
+    class FakeBroker:
+        async def unsubscribe(self, subscription):
+            return None
+
+    from delamain_backend.workers.manager import PTY_SUBSCRIBER_MAX_BUFFER, WorkerPtySubscription
+
+    subscription = WorkerPtySubscription(FakeBroker())
+    subscription.publish("x" * (PTY_SUBSCRIBER_MAX_BUFFER - 8))
+    subscription.publish("y" * 32)
+
+    event = _event_loop().run_until_complete(subscription.receive())
+    assert event.kind == "data"
+    assert event.data.startswith("x")
+    assert event.dropped_chunks == 1
+    assert event.dropped_bytes == 32
+
+
+def test_worker_terminal_input_surfaces_winpc_ssh_failure(
+    test_config,
+    shell_worker_registry,
+    tmp_path,
+    monkeypatch,
+):
+    socket_path = tmp_path / "test-workers.sock"
+    app = create_app(test_config)
+
+    class FakeProc:
+        def __init__(self):
+            self.returncode = 255
+
+        async def communicate(self):
+            return b"", b"Permission denied (publickey)\n"
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc()
+
+    async def fake_alive(self, session_name, *, host, tmux_socket=None):
+        return True
+
+    from delamain_backend.workers.manager import WorkerManager
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(WorkerManager, "_session_alive", fake_alive)
+
+    with TestClient(app):
+        loop = _event_loop()
+        mgr = WorkerManager(
+            config=test_config,
+            db=app.state.db,
+            bus=app.state.bus,
+            registry=shell_worker_registry,
+            tmux_socket=str(socket_path),
+        )
+        loop.run_until_complete(
+            app.state.db.execute(
+                """
+                INSERT INTO workers(
+                    id, name, worker_type, host, tmux_session, tmux_socket, command, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "worker_winpc_failure",
+                    "winpc-failure",
+                    "remote_worker",
+                    "winpc",
+                    "dw-winpc-failure",
+                    str(socket_path),
+                    "/bin/bash",
+                    "running",
+                ),
+            )
+        )
+
+        with pytest.raises(ValueError, match="WinPC SSH unavailable"):
+            loop.run_until_complete(mgr.send_terminal_input("worker_winpc_failure", "echo hi\r"))
 
 
 def test_worker_terminal_input_uses_tmux_send_keys_for_local_and_winpc(

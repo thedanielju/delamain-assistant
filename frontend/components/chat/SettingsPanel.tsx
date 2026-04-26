@@ -170,10 +170,11 @@ export function SettingsPanel({
         {onClose && <PanelHeader title="Settings" onClose={onClose} />}
 
         {/* Tabs */}
-        <div className="flex border-b border-white/[0.06] flex-shrink-0">
+        <div className="flex border-b border-white/[0.06] flex-shrink-0" role="tablist">
           {TABS.map((tab) => (
             <button
               key={tab.id}
+              role="tab"
               onClick={() => onSetTab(tab.id)}
               className={cn(
                 'flex-1 py-2.5 text-[10px] font-mono transition-all relative',

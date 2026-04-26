@@ -7,7 +7,7 @@ aliases:
 
 # DELAMAIN Frontend Contract
 
-Last updated: 2026-04-23
+Last updated: 2026-04-25
 
 This document defines the complete backend API contract for a Phase 2 frontend implementation. The canonical backend runs on `serrano` at `http://127.0.0.1:8420/api`. Deployed frontends should call same-origin `/api/...` and should not depend on whether the current upstream hop is nginx, a Next.js rewrite, or direct localhost development. All responses are JSON unless otherwise noted.
 
@@ -604,6 +604,390 @@ Response:
 ```
 
 `aggregate_status` and per-host `status` values: `ok`, `degraded`, `unavailable`. `degraded` includes a capped `detail` string suitable for a troubleshooting expander. Current known limitation: Codex CLI exposes ChatGPT login readiness but not a first-class plan name; Claude Code exposes `subscriptionType` when `claude auth status` returns it; Gemini CLI currently uses non-invasive OAuth credential presence as the auth probe.
+
+## Vault Graph and Context APIs
+
+Status: active contract for the Vault Graph slice. Frontend code should still treat absence as "Vault graph unavailable" when talking to an older backend, rather than as an auth or health failure.
+
+Core policy:
+
+- The model never receives the whole vault index, whole graph, or broad note corpus.
+- The backend computes small context capsules from a persistent local unified index.
+- Structural indexing is whole-vault but manual/scheduled, not performed on every model call.
+- `llm-workspace/syllabi` and `llm-workspace/reference` documents are first-class graph sources through converted bundle `document.md` files.
+- AI summaries, generated tags, and generated relation hints are incremental by note `sha256`.
+- User-visible context selection belongs in a tray above the input.
+- V1 graph is a Cytoscape 2D work graph; 3D Atlas is separate future work.
+- Vault maintenance is queued and reversible; no hard delete in V1.
+- Syncthing status may inform UX through sanitized APIs only.
+
+### GET /api/vault/graph
+
+Returns a bounded graph from the local vault index. Does not return full note bodies.
+
+Query parameters:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `scope` | `"active"`, `"working"`, `"long_term"`, or `"all"` | `"working"` | Graph scope. `all` still excludes ignored and locked Sensitive paths. |
+| `query` | string or null | null | Optional title/path/tag/search filter |
+| `folder` | string or null | null | Optional folder prefix |
+| `tag` | string or null | null | Optional tag filter |
+| `include_archive` | boolean | false | Include policy archive folders |
+| `limit` | number | backend default | Max nodes returned |
+
+Response:
+
+```json
+{
+  "generated_at": "2026-04-25T00:00:00Z",
+  "index": {
+    "status": "ok",
+    "built_at": "2026-04-25T00:00:00Z",
+    "stale": false,
+    "policy_hash": "sha256:..."
+  },
+  "nodes": [
+    {
+      "id": "note_...",
+      "path": "Projects/DELAMAIN/vault_graph.md",
+      "title": "Vault Graph",
+      "source_type": "vault_note",
+      "folder": "Projects/DELAMAIN",
+      "tags": ["project/delamain"],
+      "scope": "working",
+      "archived": false,
+      "sha256": "...",
+      "summary_status": "fresh",
+      "sensitive": false,
+      "ignored": false,
+      "stale": false
+    },
+    {
+      "id": "reference:api-docs",
+      "path": "reference/api-docs/document.md",
+      "title": "API Docs",
+      "source_type": "workspace_reference",
+      "category": "reference",
+      "bundle_id": "api-docs",
+      "document_md": "reference/api-docs/document.md",
+      "source_path": "reference/api-docs/original/api.pdf",
+      "status": "fresh",
+      "placement": "normal"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_...",
+      "source": "note_...",
+      "target": "note_...",
+      "kind": "wikilink",
+      "generated": false,
+      "accepted": true,
+      "rejected": false
+    }
+  ],
+  "truncated": false,
+  "limit": 500,
+  "filters": {
+    "source_types": ["vault_note", "workspace_syllabus", "workspace_reference"],
+    "folders": ["Projects/DELAMAIN", "reference/api-docs"],
+    "categories": ["reference", "syllabi"],
+    "statuses": ["fresh"],
+    "placements": ["normal", "long-term"]
+  }
+}
+```
+
+Edge kinds: `wikilink`, `markdown_link`, `backlink`, `tag`, `property`, `generated_candidate`, `accepted_generated`, `rejected_generated`.
+
+### GET /api/vault/note
+
+Returns a bounded preview for an index-known, policy-allowed note.
+
+Query parameters:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string or null | Stable note ID |
+| `path` | string or null | Vault-relative path |
+| `max_bytes` | number or null | Optional preview byte limit |
+
+Response:
+
+```json
+{
+  "id": "note_...",
+  "path": "Projects/DELAMAIN/vault_graph.md",
+  "title": "Vault Graph",
+  "sha256": "...",
+  "mtime": "2026-04-25T00:00:00Z",
+  "tags": ["project/delamain"],
+  "headings": ["Core Principle"],
+  "backlinks": ["..."],
+  "outgoing_links": ["..."],
+  "preview": "bounded markdown preview...",
+  "preview_truncated": false,
+  "content_kind": "preview",
+  "policy": {
+    "allowed": true,
+    "sensitive_locked": false,
+    "ignored": false,
+    "archive": false
+  }
+}
+```
+
+### POST /api/vault/context/preview
+
+Compatibility alias: `POST /api/vault/context-capsules`.
+
+Computes the exact bounded vault context the backend recommends for a prompt or graph selection. This endpoint does not submit a message.
+
+Request body:
+
+| Field | Type | Description |
+|---|---|---|
+| `conversation_id` | string or null | Conversation for pins and policy context |
+| `prompt` | string or null | Draft user prompt |
+| `selected_note_ids` | string[] | Explicit graph selections |
+| `selected_paths` | string[] | Explicit path selections |
+| `scope` | string or null | Optional graph scope override |
+| `max_capsules` | number or null | Optional count limit |
+| `max_tokens` | number or null | Optional context budget |
+
+Response:
+
+```json
+{
+  "generated_at": "2026-04-25T00:00:00Z",
+  "capsules": [
+    {
+      "id": "cap_...",
+      "source_note_id": "note_...",
+      "path": "Projects/DELAMAIN/vault_graph.md",
+      "title": "Vault Graph",
+      "kind": "summary",
+      "content": "short bounded context...",
+      "reason": "Pinned note and prompt topic match",
+      "score": 0.82,
+      "estimated_tokens": 96,
+      "sha256": "...",
+      "stale": false,
+      "pinned": true,
+      "policy": {
+        "allowed": true,
+        "sensitive_locked": false,
+        "ignored": false
+      }
+    }
+  ],
+  "limits": {
+    "max_capsules": 8,
+    "max_tokens": 2000,
+    "estimated_tokens": 96
+  },
+  "warnings": []
+}
+```
+
+Capsule kinds: `summary`, `snippet`, `heading`, `full_note`, `metadata`. Full-note capsules require explicit user selection or a visible backend reason. Workspace document capsules resolve from converted `document.md`; raw rich documents are never prompt payloads.
+
+Fresh generated tags and note types may influence deterministic preview reasons such as `generated_tag_match` and `note_type_match`. Fresh generated summaries may be used as the payload for oversized selected notes. Stale generated summaries are labeled stale and should not be trusted as payloads.
+
+### Vault AI Enrichment
+
+```text
+GET    /api/vault/enrichment/status
+POST   /api/vault/enrichment/run
+GET    /api/vault/enrichment/batch
+POST   /api/vault/enrichment/batch
+GET    /api/vault/enrichment/relations
+POST   /api/vault/enrichment/relations/feedback
+```
+
+`GET /api/vault/enrichment/status` returns generated metadata cache state:
+
+```json
+{
+  "generated_path": "llm-workspace/vault-index/generated/metadata.json",
+  "exists": true,
+  "counts": { "fresh": 12, "stale": 1, "missing": 293 },
+  "node_count": 306,
+  "index_generated_at": "2026-04-25T00:00:00Z"
+}
+```
+
+`POST /api/vault/enrichment/run` request:
+
+```json
+{
+  "paths": ["Projects/DELAMAIN/vault_graph.md"],
+  "limit": 4,
+  "force": false,
+  "create_proposals": true
+}
+```
+
+The endpoint runs a bounded task-model pass over policy-allowed indexed notes/documents, writes sidecar metadata to `llm-workspace/vault-index/generated/metadata.json`, and may create `generated_tag_suggestion` maintenance proposals. It does not block prompt sends and does not write source notes directly.
+
+`GET /api/vault/enrichment/batch` returns:
+
+```json
+{
+  "status": "completed",
+  "running": false,
+  "started_at": "2026-04-26T00:00:00Z",
+  "finished_at": "2026-04-26T00:00:03Z",
+  "request": { "limit": 12, "force": false, "create_proposals": true },
+  "result": { "processed": [], "skipped": [], "errors": [] },
+  "error": null
+}
+```
+
+`POST /api/vault/enrichment/batch` starts one background enrichment batch and returns `202`. It accepts `limit`, `force`, and `create_proposals`. If a batch is already running, it returns `409`.
+
+Generated metadata record fields:
+
+- `path`
+- `title`
+- `source_type`
+- `sha256`
+- `summary`
+- `tags`
+- `note_type`
+- `stale_labels`
+- `owner_notes`
+- `duplicate_candidates`
+- `relation_candidates`
+- `decisions`
+- `open_questions`
+- `model_route`
+- `generated_at`
+- `evidence`
+
+Generated relation feedback request:
+
+```json
+{
+  "from_path": "Projects/DELAMAIN/note.md",
+  "to_path": "Projects/DELAMAIN/owner.md",
+  "relation_type": "owned_by",
+  "decision": "accepted"
+}
+```
+
+`decision` is `accepted` or `rejected`. Accepted relations appear as `accepted_generated` graph edges. Rejected relations are remembered and suppressed.
+
+Graph nodes may also include advisory G5 fields:
+
+- `stale_score`
+- `stale_reasons`
+- `staleness_status`: `fresh`, `needs_review`, `stale`, or `conflicted`
+- `sync_status`: `ok` or `conflicted`
+
+### Conversation Context Pins
+
+```text
+GET    /api/conversations/{conversation_id}/context/pins
+POST   /api/conversations/{conversation_id}/context/pin
+POST   /api/conversations/{conversation_id}/context/pins
+DELETE /api/conversations/{conversation_id}/context/pin?path=...
+DELETE /api/conversations/{conversation_id}/context/pins?path=...
+```
+
+Pins persist explicit user choices. Previewing a note is not the same as pinning it.
+
+Pin response shape:
+
+```json
+{
+  "id": "pin_...",
+  "conversation_id": "conv_...",
+  "source_note_id": "note_...",
+  "path": "Projects/DELAMAIN/vault_graph.md",
+  "title": "Vault Graph",
+  "mode": "summary",
+  "created_at": "2026-04-25T00:00:00Z"
+}
+```
+
+### Vault Maintenance Queue
+
+```text
+GET    /api/vault/maintenance/proposals
+POST   /api/vault/maintenance/proposals
+PATCH  /api/vault/maintenance/proposals/{proposal_id}
+GET    /api/vault/maintenance/proposals/{proposal_id}/diff
+POST   /api/vault/maintenance/proposals/{proposal_id}/apply
+POST   /api/vault/maintenance/proposals/{proposal_id}/reject
+POST   /api/vault/maintenance/proposals/{proposal_id}/revert
+```
+
+Maintenance item categories: `summary_refresh`, `tag_suggestion`, `link_suggestion`, `archive_suggestion`, `taxonomy_suggestion`, `conflict_resolution`, `stale_metadata_cleanup`.
+
+V1 supports status-only proposals plus reversible exact text replacement proposals on indexed Obsidian vault notes. Exact replacements can be diffed, applied, rejected, and reverted. Broad moves, merges, splits, large rewrites, taxonomy changes, and archive workflows remain staged for future review-first implementations.
+
+Exact replacement payload:
+
+```json
+{
+  "action": "exact_replace",
+  "path": "Projects/DELAMAIN/note.md",
+  "old_text": "old exact text",
+  "new_text": "new exact text",
+  "expected_sha256": "optional-current-source-sha"
+}
+```
+
+Aliases accepted by the backend: `exact_replace`, `replace_text`, `patch_text_file`.
+
+Exact replacement gates:
+
+- one change per proposal in V1
+- target must be an indexed `vault_note`
+- target must pass write path policy with Sensitive locked
+- target must not be in sanitized Syncthing conflict reports
+- `old_text` must occur exactly once
+- `expected_sha256`, when present, must match current bytes
+- apply records a backup path, source/new hashes, byte counts, and audit event
+- revert restores only DELAMAIN-created backups after confirming the current file still matches the applied new hash
+
+Heartbeat ingestion warnings and errors are inserted as maintenance proposals with kinds such as `workspace_ingest_warning`, `workspace_ingest_error`, and `vault_index_heartbeat_error`.
+
+### Vault Folder Init
+
+```text
+POST   /api/vault/folders/init
+```
+
+Request:
+
+```json
+{
+  "kind": "project",
+  "name": "Graph Demo"
+}
+```
+
+`kind` is one of `project`, `course`, or `reference`. The backend runs `delamain-vault-index init-folder --kind ... --name ... --json`, audits the action, rebuilds the unified graph through the helper, and returns the helper JSON.
+
+### Vault Index Helper Commands
+
+```text
+delamain-vault-index build --json
+delamain-vault-index build --auto-ingest --json
+delamain-vault-index heartbeat --json
+delamain-vault-index init-folder --kind project --name "..." --json
+delamain-vault-index init-folder --kind course --name "..." --json
+delamain-vault-index init-folder --kind reference --name "..." --json
+```
+
+Backend heartbeat runs the helper every 5 minutes after a 90-second inactivity window when source changes are detected. Status is written to `llm-workspace/vault-index/_heartbeat.json`.
+
+Safe auto-apply is allowed only when policy gates pass: allowlisted item type, matching `sha256`, reversible change, no Sensitive/ignored/conflicted/actively edited target, and healthy or non-blocking Syncthing state.
+
+Hard delete is not part of V1. Delete-like actions must move to archive/quarantine/review or create a manual queue item.
 
 ## Syncthing
 

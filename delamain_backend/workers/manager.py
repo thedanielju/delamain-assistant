@@ -22,6 +22,7 @@ SESSION_PREFIX = "dw-"
 CAPTURE_LINES = 200
 SUPPORTED_WORKER_HOSTS = {"serrano", "winpc"}
 PTY_CAPTURE_LINES = 200
+PTY_SUBSCRIBER_MAX_BUFFER = 64 * 1024
 
 
 _TERMINAL_INPUT_KEYS = {
@@ -96,6 +97,11 @@ class WorkerManager:
         if existing is not None:
             raise ValueError(f"A worker named '{name}' is already running")
 
+        if wtype.host == "winpc":
+            readiness = await self.registry.readiness_for(wtype.id, refresh=True)
+            if readiness["status"] == "unavailable":
+                raise ValueError(readiness["reason"] or f"Worker type {wtype.id} is unavailable")
+
         cwd = str(wtype.cwd) if wtype.cwd else str(Path.home())
         command = " ".join(wtype.command_template)
 
@@ -122,13 +128,26 @@ class WorkerManager:
             proc = await self._start_session_process(wtype, session_name, cwd)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             if proc.returncode != 0:
-                error = stderr.decode("utf-8", errors="replace").strip()
+                error = _format_worker_command_error(
+                    wtype.host,
+                    "start worker session",
+                    stderr.decode("utf-8", errors="replace"),
+                    stdout=stdout.decode("utf-8", errors="replace"),
+                    returncode=proc.returncode,
+                )
                 await self._mark_failed(worker_id, error)
                 return await self._worker_out(worker_id)
         except asyncio.TimeoutError:
             # tmux server cold-start can be slow; check if session came up
             if not await self._session_alive(session_name, host=wtype.host):
-                await self._mark_failed(worker_id, "tmux session creation timed out")
+                await self._mark_failed(
+                    worker_id,
+                    _format_worker_command_error(
+                        wtype.host,
+                        "start worker session",
+                        "tmux session creation timed out",
+                    ),
+                )
                 return await self._worker_out(worker_id)
         except Exception as exc:
             await self._mark_failed(worker_id, str(exc))
@@ -387,6 +406,8 @@ class WorkerManager:
         *,
         status_filter: str | None = None,
         conversation_id: str | None = None,
+        include_readiness: bool = False,
+        refresh_readiness: bool = False,
     ) -> list[dict[str, Any]]:
         if status_filter:
             rows = await self.db.fetchall(
@@ -402,12 +423,31 @@ class WorkerManager:
             rows = await self.db.fetchall(
                 "SELECT * FROM workers ORDER BY created_at DESC"
             )
-        return [_worker_row_out(row) for row in rows]
+        workers = [_worker_row_out(row) for row in rows]
+        if include_readiness:
+            await self._attach_readiness(workers, refresh=refresh_readiness)
+        return workers
 
-    async def get_worker(self, worker_id: str) -> dict[str, Any]:
-        return await self._worker_out(worker_id)
+    async def get_worker(
+        self,
+        worker_id: str,
+        *,
+        include_readiness: bool = False,
+        refresh_readiness: bool = False,
+    ) -> dict[str, Any]:
+        return await self._worker_out(
+            worker_id,
+            include_readiness=include_readiness,
+            refresh_readiness=refresh_readiness,
+        )
 
-    async def refresh_status(self, worker_id: str) -> dict[str, Any]:
+    async def refresh_status(
+        self,
+        worker_id: str,
+        *,
+        include_readiness: bool = False,
+        refresh_readiness: bool = False,
+    ) -> dict[str, Any]:
         row = await self._get_worker(worker_id)
         if row["status"] in ("running", "starting", "stopping"):
             alive = await self._session_alive(
@@ -426,7 +466,11 @@ class WorkerManager:
                     """,
                     (worker_id,),
                 )
-        return await self._worker_out(worker_id)
+        return await self._worker_out(
+            worker_id,
+            include_readiness=include_readiness,
+            refresh_readiness=refresh_readiness,
+        )
 
     async def reconcile_on_startup(self) -> dict[str, int]:
         rows = await self.db.fetchall(
@@ -474,8 +518,7 @@ class WorkerManager:
     ) -> asyncio.subprocess.Process:
         if wtype.host == "winpc":
             return await asyncio.create_subprocess_exec(
-                "/usr/bin/ssh",
-                "winpc",
+                *_ssh_winpc_args(),
                 _winpc_tmux_command(
                     "new-session",
                     "-d",
@@ -519,8 +562,7 @@ class WorkerManager:
     ) -> None:
         if host == "winpc":
             proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/ssh",
-                "winpc",
+                *_ssh_winpc_args(),
                 _winpc_tmux_command("send-keys", "-t", session_name, *keys),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -536,7 +578,17 @@ class WorkerManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-        await asyncio.wait_for(proc.communicate(), timeout=5)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode != 0:
+            raise ValueError(
+                _format_worker_command_error(
+                    host,
+                    "send terminal input",
+                    stderr.decode("utf-8", errors="replace"),
+                    stdout=stdout.decode("utf-8", errors="replace"),
+                    returncode=proc.returncode,
+                )
+            )
 
     async def _kill_session(
         self,
@@ -546,8 +598,7 @@ class WorkerManager:
     ) -> None:
         if host == "winpc":
             proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/ssh",
-                "winpc",
+                *_ssh_winpc_args(),
                 _winpc_tmux_command("kill-session", "-t", session_name),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -573,8 +624,7 @@ class WorkerManager:
     ) -> asyncio.subprocess.Process:
         if host == "winpc":
             return await asyncio.create_subprocess_exec(
-                "/usr/bin/ssh",
-                "winpc",
+                *_ssh_winpc_args(),
                 _winpc_tmux_command(
                     "capture-pane",
                     "-p",
@@ -608,8 +658,7 @@ class WorkerManager:
     ) -> None:
         if host == "winpc":
             proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/ssh",
-                "winpc",
+                *_ssh_winpc_args(),
                 _winpc_tmux_command("pipe-pane", "-t", session_name, command),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -627,8 +676,14 @@ class WorkerManager:
             )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode != 0:
-            error = stderr.decode("utf-8", errors="replace").strip()
-            raise ValueError(error or "Failed to open worker tmux pipe")
+            raise ValueError(
+                _format_worker_command_error(
+                    host,
+                    "open worker PTY pipe",
+                    stderr.decode("utf-8", errors="replace"),
+                    returncode=proc.returncode,
+                )
+            )
 
     async def _disable_pipe_pane(
         self,
@@ -639,8 +694,7 @@ class WorkerManager:
     ) -> None:
         if host == "winpc":
             proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/ssh",
-                "winpc",
+                *_ssh_winpc_args(),
                 _winpc_tmux_command("pipe-pane", "-t", session_name),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -685,8 +739,7 @@ class WorkerManager:
 
     async def _create_winpc_pipe_reader(self) -> WorkerPipeReader:
         proc = await asyncio.create_subprocess_exec(
-            "/usr/bin/ssh",
-            "winpc",
+            *_ssh_winpc_args(),
             _winpc_shell_command(
                 "set -e; d=$(mktemp -d /tmp/delamain-pty.XXXXXX); "
                 'mkfifo "$d/out"; printf "%s\\n" "$d"'
@@ -696,13 +749,19 @@ class WorkerManager:
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode != 0:
-            error = stderr.decode("utf-8", errors="replace").strip()
-            raise ValueError(error or "Failed to create WinPC worker pipe")
+            raise ValueError(
+                _format_worker_command_error(
+                    "winpc",
+                    "create worker PTY pipe",
+                    stderr.decode("utf-8", errors="replace"),
+                    stdout=stdout.decode("utf-8", errors="replace"),
+                    returncode=proc.returncode,
+                )
+            )
         pipe_dir = stdout.decode("utf-8", errors="replace").strip()
         pipe_path = f"{pipe_dir}/out"
         reader = await asyncio.create_subprocess_exec(
-            "/usr/bin/ssh",
-            "winpc",
+            *_ssh_winpc_args(),
             _winpc_shell_command(f"cat {shlex.quote(pipe_path)}"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -710,8 +769,7 @@ class WorkerManager:
 
         async def cleanup() -> None:
             cleanup_proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/ssh",
-                "winpc",
+                *_ssh_winpc_args(),
                 _winpc_shell_command(f"rm -rf {shlex.quote(pipe_dir)}"),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -735,8 +793,7 @@ class WorkerManager:
         try:
             if host == "winpc":
                 proc = await asyncio.create_subprocess_exec(
-                    "/usr/bin/ssh",
-                    "winpc",
+                    *_ssh_winpc_args(),
                     _winpc_tmux_command("has-session", "-t", session_name),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -762,9 +819,43 @@ class WorkerManager:
             raise ValueError(f"Worker not found: {worker_id}")
         return row
 
-    async def _worker_out(self, worker_id: str) -> dict[str, Any]:
+    async def _worker_out(
+        self,
+        worker_id: str,
+        *,
+        include_readiness: bool = False,
+        refresh_readiness: bool = False,
+    ) -> dict[str, Any]:
         row = await self._get_worker(worker_id)
-        return _worker_row_out(row)
+        worker = _worker_row_out(row)
+        if include_readiness:
+            await self._attach_readiness([worker], refresh=refresh_readiness)
+        return worker
+
+    async def _attach_readiness(
+        self,
+        workers: list[dict[str, Any]],
+        *,
+        refresh: bool,
+    ) -> None:
+        if not workers:
+            return
+        worker_types = sorted({worker["worker_type"] for worker in workers})
+        readiness_by_type = {
+            worker_type: readiness
+            for worker_type, readiness in zip(
+                worker_types,
+                await asyncio.gather(
+                    *(
+                        self.registry.readiness_for(worker_type, refresh=refresh)
+                        for worker_type in worker_types
+                    )
+                ),
+                strict=True,
+            )
+        }
+        for worker in workers:
+            worker["readiness"] = readiness_by_type.get(worker["worker_type"])
 
     async def _mark_failed(self, worker_id: str, error: str) -> None:
         await self.db.execute(
@@ -835,20 +926,85 @@ class WorkerPipeReader:
     cleanup: Any
 
 
+@dataclass
+class WorkerPtyEvent:
+    kind: str
+    data: str = ""
+    dropped_chunks: int = 0
+    dropped_bytes: int = 0
+    message: str | None = None
+
+
 class WorkerPtySubscription:
-    def __init__(self, broker: WorkerPtyBroker, queue: asyncio.Queue[str | None]):
+    _WAKE = object()
+    _CLOSE = object()
+
+    def __init__(self, broker: WorkerPtyBroker):
         self._broker = broker
-        self._queue = queue
+        self._queue: asyncio.Queue[object] = asyncio.Queue(maxsize=1)
+        self._buffer: list[str] = []
+        self._buffer_bytes = 0
+        self._dropped_chunks = 0
+        self._dropped_bytes = 0
+        self._close_message: str | None = None
         self._closed = False
 
-    async def receive(self) -> str | None:
-        return await self._queue.get()
+    def publish(self, text: str) -> None:
+        if self._closed:
+            return
+        size = len(text.encode("utf-8", errors="replace"))
+        if self._buffer_bytes + size > PTY_SUBSCRIBER_MAX_BUFFER:
+            self._dropped_chunks += 1
+            self._dropped_bytes += size
+        else:
+            self._buffer.append(text)
+            self._buffer_bytes += size
+        self._notify(self._WAKE)
+
+    def mark_closed(self, message: str | None = None) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._close_message = message
+        self._notify(self._CLOSE)
+
+    async def receive(self) -> WorkerPtyEvent:
+        marker = await self._queue.get()
+        if marker is self._CLOSE:
+            return self._flush(kind="closed")
+        return self._flush(kind="data")
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        await self._broker.unsubscribe(self._queue)
+        await self._broker.unsubscribe(self)
+
+    def _notify(self, marker: object) -> None:
+        if self._queue.full():
+            if marker is self._CLOSE:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            else:
+                return
+        self._queue.put_nowait(marker)
+
+    def _flush(self, *, kind: str) -> WorkerPtyEvent:
+        data = "".join(self._buffer)
+        event = WorkerPtyEvent(
+            kind=kind,
+            data=data,
+            dropped_chunks=self._dropped_chunks,
+            dropped_bytes=self._dropped_bytes,
+            message=self._close_message,
+        )
+        self._buffer.clear()
+        self._buffer_bytes = 0
+        self._dropped_chunks = 0
+        self._dropped_bytes = 0
+        return event
 
 
 class WorkerPtyBroker:
@@ -857,7 +1013,7 @@ class WorkerPtyBroker:
         self.worker_id = worker_id
         self.row = row
         self.reader: WorkerPipeReader | None = None
-        self.queues: set[asyncio.Queue[str | None]] = set()
+        self.subscriptions: set[WorkerPtySubscription] = set()
         self.task: asyncio.Task[None] | None = None
         self.closed = False
 
@@ -872,16 +1028,16 @@ class WorkerPtyBroker:
         self.task = asyncio.create_task(self._read_loop())
 
     def subscribe(self) -> WorkerPtySubscription:
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
-        self.queues.add(queue)
-        return WorkerPtySubscription(self, queue)
+        subscription = WorkerPtySubscription(self)
+        self.subscriptions.add(subscription)
+        return subscription
 
-    async def unsubscribe(self, queue: asyncio.Queue[str | None]) -> None:
-        self.queues.discard(queue)
-        if not self.queues:
+    async def unsubscribe(self, subscription: WorkerPtySubscription) -> None:
+        self.subscriptions.discard(subscription)
+        if not self.subscriptions:
             await self.close()
 
-    async def close(self) -> None:
+    async def close(self, *, message: str | None = None) -> None:
         if self.closed:
             return
         self.closed = True
@@ -890,7 +1046,8 @@ class WorkerPtyBroker:
             self.row["host"],
             tmux_socket=self.row.get("tmux_socket"),
         )
-        if self.task is not None:
+        current_task = asyncio.current_task()
+        if self.task is not None and self.task is not current_task:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.task
@@ -902,12 +1059,13 @@ class WorkerPtyBroker:
                 if self.reader.process.returncode is None:
                     self.reader.process.kill()
             await self.reader.cleanup()
-        for queue in list(self.queues):
-            queue.put_nowait(None)
-        self.queues.clear()
+        for subscription in list(self.subscriptions):
+            subscription.mark_closed(message)
+        self.subscriptions.clear()
         await self.manager._remove_pty_broker(self.worker_id, self)
 
     async def _read_loop(self) -> None:
+        close_message: str | None = None
         try:
             assert self.reader is not None
             assert self.reader.process.stdout is not None
@@ -916,13 +1074,39 @@ class WorkerPtyBroker:
                 if not chunk:
                     break
                 text = chunk.decode("utf-8", errors="replace")
-                for queue in list(self.queues):
-                    queue.put_nowait(text)
+                for subscription in list(self.subscriptions):
+                    subscription.publish(text)
         except asyncio.CancelledError:
             raise
+        except Exception as exc:
+            close_message = str(exc)
         finally:
-            for queue in list(self.queues):
-                queue.put_nowait(None)
+            if close_message is None:
+                close_message = await self._pipe_close_message()
+            if not self.closed:
+                await self.close(message=close_message)
+
+    async def _pipe_close_message(self) -> str | None:
+        if self.reader is None:
+            return None
+        process = self.reader.process
+        if process.returncode is None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), timeout=1)
+        stderr = ""
+        if process.stderr is not None:
+            with contextlib.suppress(Exception):
+                stderr = (
+                    await asyncio.wait_for(process.stderr.read(), timeout=0.2)
+                ).decode("utf-8", errors="replace")
+        if process.returncode in (None, 0):
+            return None
+        return _format_worker_command_error(
+            self.row["host"],
+            "stream worker PTY output",
+            stderr,
+            returncode=process.returncode,
+        )
 
 
 def _terminal_input_chunks(data: str) -> list[tuple[str | None, str | None]]:
@@ -965,6 +1149,79 @@ def _winpc_tmux_command(*args: str) -> str:
 
 def _winpc_shell_command(command: str) -> str:
     return " ".join(("wsl.exe", "-e", "sh", "-lc", _quote_remote_arg(command)))
+
+
+def _ssh_winpc_args() -> tuple[str, ...]:
+    return (
+        "/usr/bin/ssh",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=2",
+        "winpc",
+    )
+
+
+def _format_worker_command_error(
+    host: str,
+    action: str,
+    stderr: str,
+    *,
+    stdout: str = "",
+    returncode: int | None = None,
+) -> str:
+    detail = _first_non_empty(stderr, stdout)
+    if host == "winpc":
+        lower = (detail or "").lower()
+        if _is_winpc_transport_error(lower):
+            return f"WinPC SSH unavailable while trying to {action}: {detail}"
+        if _is_winpc_wsl_error(lower):
+            return f"WinPC WSL unavailable while trying to {action}: {detail}"
+        if "tmux" in lower and ("not found" in lower or "no such file" in lower):
+            return f"WinPC tmux unavailable while trying to {action}: {detail}"
+        if detail:
+            return f"WinPC worker error while trying to {action}: {detail}"
+        return f"WinPC worker error while trying to {action} (exit code {returncode})"
+    if detail:
+        return detail
+    return f"Failed to {action}" if returncode is None else f"Failed to {action} (exit code {returncode})"
+
+
+def _is_winpc_transport_error(detail: str) -> bool:
+    return any(
+        token in detail
+        for token in (
+            "could not resolve hostname",
+            "name or service not known",
+            "no route to host",
+            "connection refused",
+            "connection timed out",
+            "connection reset",
+            "permission denied",
+            "host key verification failed",
+            "broken pipe",
+        )
+    )
+
+
+def _is_winpc_wsl_error(detail: str) -> bool:
+    return "wsl" in detail and any(
+        token in detail for token in ("not found", "not recognized", "no such file", "failed")
+    )
+
+
+def _first_non_empty(*texts: str) -> str | None:
+    for text in texts:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                return stripped
+    return None
 
 
 def _quote_remote_arg(arg: str) -> str:

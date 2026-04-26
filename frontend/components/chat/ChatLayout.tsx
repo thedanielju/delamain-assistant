@@ -21,9 +21,10 @@ import { BackendStatusBanner } from './BackendStatusBanner'
 import { SensitiveLockBadge } from './SensitiveLockBadge'
 import { AuditTrail } from './AuditTrail'
 import { VaultPanel } from './VaultPanel'
+import { ComposerContextTray } from './ComposerContextTray'
 import { useDelamainBackend } from '@/hooks/useDelamainBackend'
 import { api } from '@/lib/api'
-import type { RightPanelId, ContextFile } from '@/lib/types'
+import type { ContextFile } from '@/lib/types'
 
 type ContextFileId = 'system-context' | 'short-term-continuity' | null
 
@@ -134,6 +135,9 @@ export function ChatLayout() {
     handleStartWorker,
     handleChangeTheme,
     handleDismissFile,
+    handleAddVaultContext,
+    handleRemoveVaultContext,
+    handlePreviewVaultContext,
     handleRefreshHealth,
     handleRefreshUsage,
     handleRefreshSyncthing,
@@ -245,7 +249,7 @@ export function ChatLayout() {
       }
       setContextEditFile(null)
     },
-    [contextEditFile, handleChangeSystemContext, handleChangeShortTermContinuity, state.activeConversationId],
+    [contextEditFile, handleChangeSystemContext, handleChangeShortTermContinuity],
   )
 
   const toggleSensitive = useCallback(() => {
@@ -421,7 +425,7 @@ export function ChatLayout() {
               style={state.rightPanel === 'vault' ? { color: 'var(--accent-blue)' } : {}}
               aria-label="Vault panel"
               aria-pressed={state.rightPanel === 'vault'}
-              title="Vault graph — requires backend Prompt D"
+              title="Vault graph"
             >
               <Network size={14} />
             </button>
@@ -456,6 +460,12 @@ export function ChatLayout() {
 
         <AuditTrail entries={state.audit} conversationId={state.activeConversationId} />
 
+        <ComposerContextTray
+          items={state.vaultContextItems ?? []}
+          onRemove={handleRemoveVaultContext}
+          onOpenVault={() => openPanel('vault')}
+        />
+
         <InputBar
           onSend={handleSend}
           blankSlate={state.blankSlate}
@@ -466,6 +476,7 @@ export function ChatLayout() {
           onToggleIncognito={() => setState((s) => ({ ...s, incognito: !s.incognito }))}
           onToggleSensitive={toggleSensitive}
           onRunDirectAction={handleRunDirectAction}
+          onDraftChange={handlePreviewVaultContext}
           conversationId={state.activeConversationId}
         />
       </main>
@@ -546,7 +557,11 @@ export function ChatLayout() {
             <DragHandle onMouseDown={rightPanelResize.onMouseDown} side="left" />
             <PanelHeader title="Vault" onClose={closePanel} />
             <div className="flex-1 overflow-hidden">
-              <VaultPanel conversationId={state.activeConversationId} />
+              <VaultPanel
+                conversationId={state.activeConversationId}
+                pinnedItems={state.vaultContextItems ?? []}
+                onPinToContext={handleAddVaultContext}
+              />
             </div>
           </aside>
         </>

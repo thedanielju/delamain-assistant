@@ -240,3 +240,70 @@ MIGRATIONS.append(
         """,
     )
 )
+
+MIGRATIONS.append(
+    (
+        6,
+        """
+        CREATE TABLE IF NOT EXISTS context_pins (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            title TEXT,
+            mode TEXT NOT NULL DEFAULT 'vault_note_pin',
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            UNIQUE(conversation_id, path)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_context_pins_conversation
+            ON context_pins(conversation_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS run_selected_context (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            title TEXT,
+            mode TEXT NOT NULL,
+            byte_count INTEGER,
+            sha256 TEXT,
+            included INTEGER NOT NULL,
+            reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_run_selected_context_run
+            ON run_selected_context(run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS pending_run_context (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            title TEXT,
+            mode TEXT NOT NULL DEFAULT 'vault_context_tray',
+            reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pending_run_context_run
+            ON pending_run_context(run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS vault_maintenance_proposals (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            paths_json TEXT NOT NULL DEFAULT '[]',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'proposed',
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            resolved_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vault_maintenance_proposals_status
+            ON vault_maintenance_proposals(status, created_at);
+        """,
+    )
+)

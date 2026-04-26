@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, AuthRequiredError, BackendUnreachableError } from '@/lib/api'
+import { api, AuthRequiredError, BackendError, BackendUnreachableError } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/config'
 import {
   toHealthEntriesFromHealth,
@@ -34,7 +34,6 @@ import type {
   ChatMessage,
   Conversation,
   ContextFile,
-  Folder,
   Permission,
   RightPanelId,
   RunStatus,
@@ -44,6 +43,10 @@ import type {
   ToolCall,
   ThemeName,
   UsageProviderSummary,
+  VaultContextItem,
+  VaultContextPreview,
+  VaultNoteDetail,
+  VaultPinsResponse,
   Worker,
 } from '@/lib/types'
 
@@ -153,12 +156,72 @@ function mergeFetchedMessages(current: ChatMessage[], fetched: ChatMessage[]): C
   return merged
 }
 
+function vaultItemFromPath(path: string, pinned = true): VaultContextItem {
+  const parts = path.split('/')
+  return {
+    id: path,
+    path,
+    title: parts[parts.length - 1] || path,
+    pinned,
+  }
+}
+
+function normalizeVaultContextItems(
+  response: VaultPinsResponse | VaultContextPreview | null | undefined
+): VaultContextItem[] {
+  if (!response) return []
+  const rawItems = response.items ?? ('pins' in response ? response.pins : undefined)
+  if (rawItems?.length) {
+    return rawItems.flatMap((item) => {
+      if (typeof item === 'string') return [vaultItemFromPath(item)]
+      if (!item || typeof item !== 'object' || !item.path) return []
+      return [{
+        id: item.id ?? item.path,
+        path: item.path,
+        title: item.title ?? vaultItemFromPath(item.path).title,
+        preview: item.preview,
+        bytes: item.bytes,
+        tokenEstimate: item.tokenEstimate ?? item.estimated_tokens,
+        mode: item.mode,
+        reason: item.reason,
+        reasons: item.reasons,
+        score: item.score,
+        sha256: item.sha256,
+        stale: item.stale,
+        tags: item.tags,
+        source_type: item.source_type,
+        category: item.category,
+        pinned: item.pinned ?? true,
+        excluded: item.excluded,
+        exclusionReason: item.exclusionReason,
+      }]
+    })
+  }
+  return (response.paths ?? []).map((path) => vaultItemFromPath(path))
+}
+
+function vaultContextItemFromNote(note: VaultNoteDetail): VaultContextItem {
+  return {
+    id: note.path,
+    path: note.path,
+    title: note.title || vaultItemFromPath(note.path).title,
+    preview: note.content.slice(0, 320),
+    bytes: note.bytes,
+    tokenEstimate: note.bytes ? Math.round(note.bytes / 4) : null,
+    tags: note.tags,
+    source_type: note.source_type,
+    pinned: true,
+    excluded: note.excluded,
+  }
+}
+
 export function useDelamainBackend() {
   const [state, setState] = useState<BackendState>({
     ...INITIAL_STATE,
     connection: MOCK_MODE ? 'mock' : 'probing',
     authRedirectUrl: null,
     audit: [],
+    vaultContextItems: [],
     conversations: MOCK_MODE ? INITIAL_STATE.conversations : [],
     activeConversationId: MOCK_MODE ? INITIAL_STATE.activeConversationId : '',
   })
@@ -169,6 +232,11 @@ export function useDelamainBackend() {
 
   const activeConversationId = state.activeConversationId
   const connected = state.connection === 'connected'
+  const activeConversationIdRef = useRef(activeConversationId)
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId
+  }, [activeConversationId])
 
   const retryConnection = useCallback(() => {
     setState((s) =>
@@ -760,7 +828,7 @@ export function useDelamainBackend() {
     return () => {
       cancelled = true
     }
-  }, [connected, activeConversationId])
+  }, [connected, activeConversationId, handleBackendError])
 
   useEffect(() => {
     if (!connected || !activeConversationId) return
@@ -782,6 +850,55 @@ export function useDelamainBackend() {
     state.sensitive,
     state.sensitiveUnlocked,
   ])
+
+  const refreshVaultContextItems = useCallback(
+    async (conversationId: string, clearOnUnavailable = true) => {
+      try {
+        const pins = await api.listConversationContextPins(conversationId)
+        if (activeConversationIdRef.current !== conversationId) return
+        const pinItems = normalizeVaultContextItems(pins)
+        if (!pinItems.length) {
+          setState((s) => ({ ...s, vaultContextItems: [] }))
+          return
+        }
+        try {
+          const preview = await api.previewConversationContext(
+            conversationId,
+            pinItems.map((item) => item.path)
+          )
+          const previewItems = normalizeVaultContextItems(preview)
+          if (activeConversationIdRef.current !== conversationId) return
+          setState((s) => ({
+            ...s,
+            vaultContextItems: previewItems.length ? previewItems : pinItems,
+          }))
+        } catch {
+          if (activeConversationIdRef.current !== conversationId) return
+          setState((s) => ({ ...s, vaultContextItems: pinItems }))
+        }
+      } catch (err) {
+        if (handleBackendError(err)) return
+        if (
+          clearOnUnavailable &&
+          err instanceof BackendError &&
+          (err.status === 404 || err.status === 405)
+        ) {
+          if (activeConversationIdRef.current !== conversationId) return
+          setState((s) => ({ ...s, vaultContextItems: [] }))
+        }
+      }
+    },
+    [handleBackendError]
+  )
+
+  useEffect(() => {
+    if (!connected || !activeConversationId) {
+      setState((s) => (s.vaultContextItems?.length ? { ...s, vaultContextItems: [] } : s))
+      return
+    }
+    setState((s) => (s.vaultContextItems?.length ? { ...s, vaultContextItems: [] } : s))
+    refreshVaultContextItems(activeConversationId)
+  }, [activeConversationId, connected, refreshVaultContextItems])
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
@@ -885,6 +1002,9 @@ export function useDelamainBackend() {
           context_mode: toBackendContextModeFromState(state, state.contextMode),
           model_route: state.model,
           incognito_route: state.incognito,
+          selected_context_paths: (state.vaultContextItems ?? [])
+            .filter((item) => !item.excluded)
+            .map((item) => item.path),
         })
         setState((s) => ({
           ...s,
@@ -913,6 +1033,26 @@ export function useDelamainBackend() {
       }
     },
     [activeConversationId, connected, handleBackendError, state]
+  )
+
+  const handlePreviewVaultContext = useCallback(
+    async (content: string) => {
+      if (!connected || !activeConversationId) return
+      const trimmed = content.trim()
+      if (trimmed.length < 3) {
+        setState((s) => ({ ...s, vaultContextItems: [] }))
+        return
+      }
+      try {
+        const preview = await api.previewVaultContext(trimmed)
+        if (activeConversationIdRef.current !== activeConversationId) return
+        const previewItems = normalizeVaultContextItems(preview)
+        setState((s) => ({ ...s, vaultContextItems: previewItems }))
+      } catch (err) {
+        handleBackendError(err)
+      }
+    },
+    [activeConversationId, connected, handleBackendError]
   )
 
   const handleToggleTool = useCallback(
@@ -1387,6 +1527,52 @@ export function useDelamainBackend() {
     []
   )
 
+  const handleAddVaultContext = useCallback(
+    async (itemsOrPaths: Array<string | VaultContextItem | VaultNoteDetail>) => {
+      if (!activeConversationId || !itemsOrPaths.length) return
+      const optimisticItems = itemsOrPaths.map((item) => {
+        if (typeof item === 'string') return vaultItemFromPath(item)
+        if ('content' in item) return vaultContextItemFromNote(item)
+        return { ...item, id: item.id || item.path, pinned: item.pinned ?? true }
+      })
+      const paths = Array.from(new Set(optimisticItems.map((item) => item.path)))
+
+      setState((s) => {
+        const byPath = new Map((s.vaultContextItems ?? []).map((item) => [item.path, item]))
+        for (const item of optimisticItems) byPath.set(item.path, { ...byPath.get(item.path), ...item })
+        return { ...s, vaultContextItems: Array.from(byPath.values()) }
+      })
+
+      if (!connected) return
+      try {
+        await api.pinContext(activeConversationId, paths)
+        await refreshVaultContextItems(activeConversationId, false)
+      } catch (err) {
+        if (handleBackendError(err)) return
+        /* keep optimistic chips when the optional backend endpoint is absent */
+      }
+    },
+    [activeConversationId, connected, handleBackendError, refreshVaultContextItems]
+  )
+
+  const handleRemoveVaultContext = useCallback(
+    async (path: string) => {
+      setState((s) => ({
+        ...s,
+        vaultContextItems: (s.vaultContextItems ?? []).filter((item) => item.path !== path),
+      }))
+      if (!connected || !activeConversationId) return
+      try {
+        await api.unpinContext(activeConversationId, path)
+        await refreshVaultContextItems(activeConversationId)
+      } catch (err) {
+        handleBackendError(err)
+        /* keep local removal if the optional backend endpoint is absent */
+      }
+    },
+    [activeConversationId, connected, handleBackendError, refreshVaultContextItems]
+  )
+
   // ── Folders ────────────────────────────────────────────────────────────────
   const handleCreateFolder = useCallback(
     async (name: string, parentId: string | null = null) => {
@@ -1674,6 +1860,9 @@ export function useDelamainBackend() {
     handleStartWorker,
     handleChangeTheme,
     handleDismissFile,
+    handleAddVaultContext,
+    handleRemoveVaultContext,
+    handlePreviewVaultContext,
     handleRefreshHealth,
     handleChangeModel,
     handleChangeDefaultModel,

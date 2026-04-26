@@ -35,6 +35,7 @@ class PromptSubmit(BaseModel):
     context_mode: ContextMode | None = None
     model_route: str | None = None
     incognito_route: bool | None = None
+    selected_context_paths: list[str] | None = Field(default=None, max_length=12)
 
 
 class PromptSubmitResponse(BaseModel):
@@ -67,6 +68,63 @@ class SyncthingConflictResolveRequest(BaseModel):
 class ContextFilePatch(BaseModel):
     content: str
     conversation_id: str | None = None
+
+
+class VaultContextPinRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=12)
+
+
+class VaultContextPreviewRequest(BaseModel):
+    prompt: str = ""
+    context_mode: ContextMode | None = None
+    paths: list[str] | None = Field(default=None, max_length=12)
+
+
+class VaultPolicyExclusionCreate(BaseModel):
+    pattern: str = Field(min_length=1, max_length=500)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class VaultFolderInitRequest(BaseModel):
+    kind: Literal["project", "course", "reference"]
+    name: str = Field(min_length=1, max_length=120)
+
+
+class VaultMaintenanceProposalCreate(BaseModel):
+    kind: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    paths: list[str] = Field(default_factory=list, max_length=50)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    conversation_id: str | None = None
+
+
+class VaultMaintenanceProposalUpdate(BaseModel):
+    status: str | None = None
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = None
+    paths: list[str] | None = Field(default=None, max_length=50)
+    payload: dict[str, Any] | None = None
+
+
+class VaultEnrichmentRunRequest(BaseModel):
+    paths: list[str] | None = Field(default=None, max_length=12)
+    limit: int = Field(default=4, ge=1, le=12)
+    force: bool = False
+    create_proposals: bool = True
+
+
+class VaultRelationFeedbackRequest(BaseModel):
+    from_path: str = Field(min_length=1, max_length=500)
+    to_path: str = Field(min_length=1, max_length=500)
+    relation_type: str = Field(default="related", min_length=1, max_length=80)
+    decision: Literal["accepted", "rejected"]
+
+
+class VaultEnrichmentBatchRequest(BaseModel):
+    limit: int = Field(default=12, ge=1, le=48)
+    force: bool = False
+    create_proposals: bool = True
 
 
 class FolderCreate(BaseModel):

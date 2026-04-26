@@ -219,28 +219,292 @@ export interface VaultNode {
   aliases: string[]
   mtime: string
   bytes: number | null
+  source_type?: 'vault_note' | 'workspace_syllabus' | 'workspace_reference' | string
+  category?: string | null
+  bundle_id?: string | null
+  document_md?: string | null
+  source_path?: string | null
+  converter?: string | null
+  status?: string | null
+  placement?: string | null
+  pinned?: boolean
+  folder?: string | null
+  incoming_link_count?: number
+  dangling_link_count?: number
+  archive_state?: string | null
+  warnings?: string[]
+  generated_metadata_state?: 'fresh' | 'stale' | 'missing' | string
+  summary_status?: 'fresh' | 'stale' | 'missing' | string
+  generated_summary?: string | null
+  generated_tags?: string[]
+  note_type?: string | null
+  stale_labels?: string[]
+  owner_notes?: string[]
+  duplicate_candidates?: Array<Record<string, unknown>>
+  relation_candidate_count?: number
+  decisions?: string[]
+  open_questions?: string[]
+  stale_score?: number
+  stale_reasons?: string[]
+  staleness_status?: 'fresh' | 'needs_review' | 'stale' | 'conflicted' | string
+  sync_status?: 'ok' | 'conflicted' | string
 }
 
 export interface VaultEdge {
   from: string
   to: string
-  kind: 'wikilink' | 'tag'
+  kind: 'wikilink' | 'tag' | 'backlink' | 'embed' | 'folder' | string
+  generated?: boolean
+  accepted?: boolean
+  relation_type?: string | null
+  reason?: string | null
+  confidence?: number | null
 }
 
 export interface VaultGraph {
   nodes: VaultNode[]
   edges: VaultEdge[]
-  generated_at: string
+  generated_at?: string
+  index?: {
+    status?: string
+    stale?: boolean
+    generated_at?: string | null
+    indexed_count?: number
+    vault_note_count?: number
+    workspace_bundle_count?: number
+    skipped_count?: number
+    warnings?: string[]
+  }
+  filters?: {
+    source_types?: string[]
+    folders?: string[]
+    categories?: string[]
+    statuses?: string[]
+    placements?: string[]
+    archive_states?: string[]
+  }
+}
+
+export interface VaultGraphParams {
+  folder?: string
+  tag?: string
+  query?: string
+  limit?: number
+}
+
+export interface VaultGraphNeighborhood {
+  center?: VaultNode | null
+  nodes: VaultNode[]
+  edges: VaultEdge[]
+  hops?: number
+  omitted?: {
+    nodes?: number
+    edges?: number
+    policy?: number
+  }
+  policy_omissions?: Array<{ path?: string; reason?: string }>
+}
+
+export interface VaultGraphPathResult {
+  found: boolean
+  nodes: VaultNode[]
+  edges: VaultEdge[]
+  omitted?: {
+    nodes?: number
+    edges?: number
+    policy?: number
+  }
+}
+
+export interface VaultContextItem {
+  id: string
+  path: string
+  title: string
+  mode?: 'full_note' | 'summary' | 'snippet' | 'metadata' | string
+  reason?: string
+  reasons?: string[]
+  preview?: string
+  bytes?: number | null
+  tokenEstimate?: number | null
+  estimated_tokens?: number | null
+  score?: number | null
+  sha256?: string | null
+  stale?: boolean
+  tags?: string[]
+  source_type?: string
+  category?: string | null
+  pinned?: boolean
+  excluded?: boolean
+  exclusionReason?: string | null
 }
 
 export interface VaultNoteDetail {
   path: string
   title: string
   content: string
-  bytes: number
-  sha256: string
+  bytes?: number | null
+  sha256?: string | null
   tags: string[]
   backlinks: string[]
+  source_type?: string
+  aliases?: string[]
+  mtime?: string | null
+  pinned?: boolean
+  excluded?: boolean
+}
+
+export interface VaultPolicyExclusion {
+  id: string
+  path: string
+  reason?: string | null
+  createdAt?: string | null
+}
+
+export interface VaultMaintenanceProposal {
+  id: string
+  title: string
+  summary?: string
+  description?: string | null
+  kind?: string
+  path?: string | null
+  paths?: string[]
+  payload?: Record<string, unknown>
+  risk?: 'low' | 'medium' | 'high' | string
+  status?: 'proposed' | 'running' | 'applied' | 'rejected' | 'reverted' | 'dismissed' | 'error' | string
+  command?: string | null
+}
+
+export interface VaultPinsResponse {
+  paths?: string[]
+  pins?: Array<string | Partial<VaultContextItem>>
+  items?: Array<string | Partial<VaultContextItem>>
+  generated_at?: string
+}
+
+export interface VaultContextPreview {
+  items?: Array<string | Partial<VaultContextItem>>
+  paths?: string[]
+  token_estimate?: number | null
+  generated_at?: string
+}
+
+export interface VaultPinMutationResponse {
+  paths?: string[]
+  pins?: Array<string | Partial<VaultContextItem>>
+  items?: Array<string | Partial<VaultContextItem>>
+  status?: string
+}
+
+export interface VaultPolicyExclusionsResponse {
+  exclusions?: Array<string | Partial<VaultPolicyExclusion>>
+  items?: Array<string | Partial<VaultPolicyExclusion>>
+  paths?: string[]
+  generated_at?: string
+}
+
+export interface VaultPolicyExclusionMutationResponse {
+  exclusion?: Partial<VaultPolicyExclusion>
+  exclusions?: Array<string | Partial<VaultPolicyExclusion>>
+  status?: string
+}
+
+export interface VaultMaintenanceProposalResponse {
+  proposals?: Array<Partial<VaultMaintenanceProposal>>
+  items?: Array<Partial<VaultMaintenanceProposal>>
+  generated_at?: string
+}
+
+export interface VaultMaintenanceProposalMutationResponse {
+  proposal?: Partial<VaultMaintenanceProposal>
+  id?: string
+  status?: string
+  payload?: Record<string, unknown>
+}
+
+export interface VaultMaintenanceProposalDiffResponse {
+  proposal?: Partial<VaultMaintenanceProposal>
+  applicable: boolean
+  reason?: string | null
+  action?: string | null
+  diff: string
+  changes?: Array<{
+    path?: string
+    applicable?: boolean
+    reason?: string | null
+    occurrences?: number
+    old_sha256?: string | null
+    new_sha256?: string | null
+    old_byte_count?: number | null
+    new_byte_count?: number | null
+    diff?: string
+  }>
+  status?: string
+}
+
+export type VaultFolderKind = 'project' | 'course' | 'reference'
+
+export interface VaultFolderInitResponse {
+  ok?: boolean
+  status?: string
+  message?: string
+  changed_paths?: string[]
+  warnings?: string[]
+  errors?: string[]
+  summary?: Record<string, unknown>
+}
+
+export interface VaultEnrichmentStatus {
+  generated_path: string
+  exists: boolean
+  counts: Record<string, number>
+  node_count: number
+  index_generated_at?: string | null
+  next_candidates?: Array<{
+    path: string
+    title: string
+    state: string
+    source_type: string
+    staleness_status: string
+  }>
+}
+
+export interface VaultEnrichmentRunResponse {
+  ok: boolean
+  model_route: string
+  processed: Array<{
+    path: string
+    sha256?: string
+    tags?: string[]
+    note_type?: string
+  }>
+  skipped: Array<{ path: string; reason: string }>
+  errors: Array<{ path: string; reason: string }>
+  proposals_created: string[]
+  generated_path: string
+}
+
+export interface VaultGeneratedRelation {
+  from_path: string
+  to_path: string
+  relation_type: string
+  reason?: string | null
+  confidence?: number | null
+  decision: 'candidate' | 'accepted' | 'rejected' | string
+  key: string
+}
+
+export interface VaultGeneratedRelationsResponse {
+  relations: VaultGeneratedRelation[]
+}
+
+export interface VaultEnrichmentBatchStatus {
+  status: 'idle' | 'queued' | 'running' | 'completed' | 'completed_with_errors' | 'failed' | string
+  running: boolean
+  started_at?: string | null
+  finished_at?: string | null
+  request?: Record<string, unknown> | null
+  result?: VaultEnrichmentRunResponse | null
+  error?: string | null
 }
 
 // ── Permissions ───────────────────────────────────────────────────────────────
@@ -355,6 +619,7 @@ export interface AppState {
   activeConversationId: string
   contextMode: ContextMode
   contextFiles: ContextFile[]
+  vaultContextItems?: VaultContextItem[]
   model: string
   defaultModel: string
   taskModel: string

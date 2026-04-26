@@ -143,7 +143,13 @@ class RunManager:
                 payload={"run_id": run_id, "model_route": run["model_route"]},
             )
 
-            loaded_context = load_context_for_run(self.config, run["context_mode"])
+            selected_context_paths, sensitive_unlocked = await self._selected_context_for_run(run)
+            loaded_context = load_context_for_run(
+                self.config,
+                run["context_mode"],
+                selected_context_paths=selected_context_paths,
+                sensitive_unlocked=sensitive_unlocked,
+            )
             if loaded_context.clock_refresh:
                 await self.bus.emit(
                     conversation_id=conversation_id,
@@ -156,6 +162,7 @@ class RunManager:
                     },
                 )
             await self._persist_context_loads(run_id, loaded_context.items)
+            await self._persist_run_selected_context(run_id, loaded_context.items)
             await self.bus.emit(
                 conversation_id=conversation_id,
                 run_id=run_id,
@@ -901,6 +908,63 @@ class RunManager:
                     item["byte_count"],
                     item["sha256"],
                     1 if item["included"] else 0,
+                ),
+            )
+
+    async def _selected_context_for_run(self, run: dict[str, Any]) -> tuple[list[str], bool]:
+        conversation = await self.db.fetchone(
+            "SELECT sensitive_unlocked FROM conversations WHERE id = ?",
+            (run["conversation_id"],),
+        )
+        pending_rows = await self.db.fetchall(
+            """
+            SELECT path
+            FROM pending_run_context
+            WHERE run_id = ?
+            ORDER BY created_at ASC
+            """,
+            (run["id"],),
+        )
+        pin_rows = await self.db.fetchall(
+            """
+            SELECT path
+            FROM context_pins
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC
+            """,
+            (run["conversation_id"],),
+        )
+        paths: list[str] = []
+        seen: set[str] = set()
+        for row in [*pending_rows, *pin_rows]:
+            path = str(row["path"])
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+        return (paths, bool(conversation and conversation["sensitive_unlocked"]))
+
+    async def _persist_run_selected_context(self, run_id: str, items: list[dict]) -> None:
+        for item in items:
+            if item.get("mode") != "vault_note_pin":
+                continue
+            await self.db.execute(
+                """
+                INSERT INTO run_selected_context(
+                    id, run_id, path, title, mode, byte_count, sha256, included, reason
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("rctx"),
+                    run_id,
+                    item.get("relative_path") or item.get("path"),
+                    item.get("title"),
+                    item.get("mode"),
+                    item.get("byte_count"),
+                    item.get("sha256"),
+                    1 if item.get("included") else 0,
+                    item.get("reason"),
                 ),
             )
 

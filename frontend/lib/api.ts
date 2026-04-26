@@ -1,5 +1,26 @@
 import { API_BASE, HEALTH_PROBE_TIMEOUT_MS } from './config'
 import type {
+  VaultContextPreview,
+  VaultGraph,
+  VaultMaintenanceProposalResponse,
+  VaultNoteDetail,
+  VaultPolicyExclusionsResponse,
+  VaultPinsResponse,
+  VaultPinMutationResponse,
+  VaultPolicyExclusionMutationResponse,
+  VaultMaintenanceProposalMutationResponse,
+  VaultMaintenanceProposalDiffResponse,
+  VaultGraphParams,
+  VaultGraphNeighborhood,
+  VaultGraphPathResult,
+  VaultFolderInitResponse,
+  VaultFolderKind,
+  VaultEnrichmentStatus,
+  VaultEnrichmentRunResponse,
+  VaultGeneratedRelationsResponse,
+  VaultEnrichmentBatchStatus,
+} from './types'
+import type {
   AuthRequiredDetail,
   BackendAction,
   BackendActionRun,
@@ -207,6 +228,7 @@ export const api = {
       context_mode?: BackendContextMode | null
       model_route?: string | null
       incognito_route?: boolean | null
+      selected_context_paths?: string[] | null
     }
   ): Promise<SubmitPromptResponse> {
     return request<SubmitPromptResponse>(
@@ -378,35 +400,145 @@ export const api = {
     )
   },
 
-  // ── Vault index (Prompt D — may 404 until backend lands it) ───────────────
-  getVaultGraph(params: { folder?: string; tag?: string; limit?: number } = {}) {
+  // ── Vault index / context pins ─────────────────────────────────────────────
+  getVaultGraph(params: VaultGraphParams = {}) {
     const q = new URLSearchParams()
     if (params.folder) q.set('folder', params.folder)
     if (params.tag) q.set('tag', params.tag)
+    if (params.query) q.set('query', params.query)
     if (params.limit != null) q.set('limit', String(params.limit))
     const suffix = q.toString() ? `?${q.toString()}` : ''
-    return request<import('./types').VaultGraph>(`/vault/graph${suffix}`)
+    return request<VaultGraph>(`/vault/graph${suffix}`)
   },
   getVaultNote(path: string) {
-    return request<import('./types').VaultNoteDetail>(
-      `/vault/note?path=${encodeURIComponent(path)}`
-    )
+    return request<VaultNoteDetail>(`/vault/note?path=${encodeURIComponent(path)}`)
+  },
+  getVaultGraphNeighborhood(path: string, hops = 1, limit = 80) {
+    const q = new URLSearchParams()
+    q.set('path', path)
+    q.set('hops', String(hops))
+    q.set('limit', String(limit))
+    return request<VaultGraphNeighborhood>(`/vault/graph/neighborhood?${q.toString()}`)
+  },
+  getVaultGraphPath(from: string, to: string) {
+    const q = new URLSearchParams()
+    q.set('from', from)
+    q.set('to', to)
+    return request<VaultGraphPathResult>(`/vault/graph/path?${q.toString()}`)
+  },
+  initVaultFolder(kind: VaultFolderKind, name: string) {
+    return request<VaultFolderInitResponse>('/vault/folders/init', {
+      method: 'POST',
+      body: JSON.stringify({ kind, name }),
+    })
+  },
+  previewVaultContext(prompt: string) {
+    return request<VaultContextPreview>('/vault/context/preview', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    })
+  },
+  getVaultEnrichmentStatus() {
+    return request<VaultEnrichmentStatus>('/vault/enrichment/status')
+  },
+  runVaultEnrichment(payload: {
+    paths?: string[] | null
+    limit?: number
+    force?: boolean
+    create_proposals?: boolean
+  } = {}) {
+    return request<VaultEnrichmentRunResponse>('/vault/enrichment/run', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+  getVaultEnrichmentBatchStatus() {
+    return request<VaultEnrichmentBatchStatus>('/vault/enrichment/batch')
+  },
+  startVaultEnrichmentBatch(payload: {
+    limit?: number
+    force?: boolean
+    create_proposals?: boolean
+  } = {}) {
+    return request<VaultEnrichmentBatchStatus>('/vault/enrichment/batch', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+  listVaultGeneratedRelations() {
+    return request<VaultGeneratedRelationsResponse>('/vault/enrichment/relations')
+  },
+  setVaultGeneratedRelationFeedback(payload: {
+    from_path: string
+    to_path: string
+    relation_type?: string
+    decision: 'accepted' | 'rejected'
+  }) {
+    return request<VaultGeneratedRelationsResponse>('/vault/enrichment/relations/feedback', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
   },
   listConversationContextPins(conversationId: string) {
-    return request<{ paths: string[] }>(
-      `/conversations/${conversationId}/context/pins`
-    )
+    return request<VaultPinsResponse>(`/conversations/${conversationId}/context/pins`)
+  },
+  previewConversationContext(conversationId: string, paths?: string[]) {
+    return request<VaultContextPreview>(`/conversations/${conversationId}/context/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ paths: paths ?? null }),
+    })
   },
   pinContext(conversationId: string, paths: string[]) {
-    return request(`/conversations/${conversationId}/context/pin`, {
+    return request<VaultPinMutationResponse>(`/conversations/${conversationId}/context/pin`, {
       method: 'POST',
       body: JSON.stringify({ paths }),
     })
   },
   unpinContext(conversationId: string, path: string) {
-    return request(
+    return request<VaultPinMutationResponse>(
       `/conversations/${conversationId}/context/pin?path=${encodeURIComponent(path)}`,
       { method: 'DELETE' }
+    )
+  },
+  listVaultPolicyExclusions() {
+    return request<VaultPolicyExclusionsResponse>('/vault/policy/exclusions')
+  },
+  createVaultPolicyExclusion(path: string, reason?: string | null) {
+    return request<VaultPolicyExclusionMutationResponse>('/vault/policy/exclusions', {
+      method: 'POST',
+      body: JSON.stringify({ pattern: path, reason: reason ?? null }),
+    })
+  },
+  deleteVaultPolicyExclusion(path: string) {
+    return request<VaultPolicyExclusionMutationResponse>(
+      `/vault/policy/exclusions?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' }
+    )
+  },
+  listVaultMaintenanceProposals() {
+    return request<VaultMaintenanceProposalResponse>('/vault/maintenance/proposals')
+  },
+  previewVaultMaintenanceProposalDiff(proposalId: string) {
+    return request<VaultMaintenanceProposalDiffResponse>(
+      `/vault/maintenance/proposals/${encodeURIComponent(proposalId)}/diff`
+    )
+  },
+  runVaultMaintenanceProposal(proposalId: string) {
+    return request<VaultMaintenanceProposalMutationResponse>(
+      `/vault/maintenance/proposals/${encodeURIComponent(proposalId)}/apply`,
+      { method: 'POST' }
+    )
+  },
+  rejectVaultMaintenanceProposal(proposalId: string) {
+    return request<VaultMaintenanceProposalMutationResponse>(
+      `/vault/maintenance/proposals/${encodeURIComponent(proposalId)}/reject`,
+      { method: 'POST' }
+    )
+  },
+  revertVaultMaintenanceProposal(proposalId: string) {
+    return request<VaultMaintenanceProposalMutationResponse>(
+      `/vault/maintenance/proposals/${encodeURIComponent(proposalId)}/revert`,
+      { method: 'POST' }
     )
   },
 

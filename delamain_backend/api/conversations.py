@@ -244,9 +244,22 @@ async def submit_prompt(
                 (generated_title, conversation_id),
             )
         )
-    await db.execute_transaction(
-        statements
-    )
+    selected_context_paths = [
+        str(path).strip()
+        for path in (payload.selected_context_paths or [])
+        if str(path).strip()
+    ]
+    for path in selected_context_paths[:12]:
+        statements.append(
+            (
+                """
+                INSERT INTO pending_run_context(id, run_id, path, mode, reason)
+                VALUES (?, ?, ?, 'vault_context_tray', 'Selected in composer tray')
+                """,
+                (new_id("prctx"), run_id, path),
+            )
+        )
+    await db.execute_transaction(statements)
     if generated_title:
         await run_manager.bus.emit(
             conversation_id=conversation_id,
