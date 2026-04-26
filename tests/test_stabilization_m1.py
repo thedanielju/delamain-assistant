@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import replace
 
@@ -27,6 +28,19 @@ class SlowModelClient:
             "model": model_route,
             "api_family": "responses",
             "text": f"slow ok {self.calls}",
+            "tool_calls": [],
+            "usage": None,
+            "raw": {},
+        }
+
+
+class LongTextModelClient:
+    async def complete(self, *, model_route, messages, tools=None):
+        return {
+            "id": "long_text",
+            "model": model_route,
+            "api_family": "responses",
+            "text": "x" * 500,
             "tool_calls": [],
             "usage": None,
             "raw": {},
@@ -145,6 +159,63 @@ def test_cancel_running_run_persists_cancel_events(test_config):
         assert "run.completed" in events
         terminal_index = len(events) - 1 - events[::-1].index("run.completed")
         assert "message.delta" not in events[terminal_index + 1 :]
+
+
+def test_cancel_waits_for_inflight_delta_before_terminal_event(test_config):
+    app = create_app(test_config, model_client=LongTextModelClient())
+    first_delta = threading.Event()
+    release_delta = threading.Event()
+    cancel_result = {}
+
+    with TestClient(app) as client:
+        original_emit = app.state.bus.emit
+
+        async def wrapped_emit(*, conversation_id, run_id, event_type, payload):
+            if event_type == "message.delta" and not first_delta.is_set():
+                first_delta.set()
+                await asyncio.to_thread(release_delta.wait, 2)
+            return await original_emit(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                event_type=event_type,
+                payload=payload,
+            )
+
+        app.state.bus.emit = wrapped_emit
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        run_id = client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "cancel while streaming"},
+        ).json()["run_id"]
+        assert first_delta.wait(3)
+
+        def cancel_request():
+            cancel_result["response"] = client.post(f"/api/runs/{run_id}/cancel")
+
+        cancel_thread = threading.Thread(target=cancel_request)
+        cancel_thread.start()
+        time.sleep(0.05)
+        release_delta.set()
+        cancel_thread.join(3)
+        assert not cancel_thread.is_alive()
+        assert cancel_result["response"].status_code == 200
+        assert cancel_result["response"].json()["status"] == "cancelled"
+        assert _wait_for_run(client, run_id)["status"] == "cancelled"
+
+        con = sqlite3.connect(test_config.database.path)
+        rows = [
+            (row[0], json.loads(row[1]))
+            for row in con.execute(
+                "SELECT type, payload FROM events WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            )
+        ]
+        terminal_index = next(
+            index
+            for index, (event_type, payload) in enumerate(rows)
+            if event_type == "run.completed" and payload.get("status") == "cancelled"
+        )
+        assert [event_type for event_type, _ in rows[terminal_index + 1 :]] == []
 
 
 def test_failed_run_preserves_streamed_assistant_text(test_config):

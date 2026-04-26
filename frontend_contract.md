@@ -32,7 +32,7 @@ When a request reaches FastAPI in `access_required` mode without a valid Cloudfl
 ```json
 {
   "detail": {
-    "code": "AUTH_REQUIRED",
+    "code": "auth_required",
     "message": "Missing Cloudflare Access JWT"
   }
 }
@@ -321,7 +321,7 @@ Retry a failed/cancelled run.
 |---|---|
 | `queued` | Submitted, waiting to start |
 | `running` | Actively processing |
-| `waiting_approval` | Paused for user approval (future) |
+| `waiting_approval` | Paused for user approval |
 | `completed` | Finished successfully |
 | `failed` | Finished with error |
 | `interrupted` | Interrupted on startup recovery |
@@ -369,7 +369,7 @@ data: {"payload": ...}
 
 | Event | When | Key Payload Fields |
 |---|---|---|
-| `run.queued` | Run created | `run_id`, `status` |
+| `run.queued` | Run created | `run_id`, `position` |
 | `run.started` | Run begins processing | `run_id` |
 | `context.loaded` | Context files loaded | `items` (array of loaded context) |
 | `message.delta` | Streaming assistant text | `message_id`, `text` |
@@ -652,11 +652,8 @@ Query parameters:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `scope` | `"active"`, `"working"`, `"long_term"`, or `"all"` | `"working"` | Graph scope. `all` still excludes ignored and locked Sensitive paths. |
-| `query` | string or null | null | Optional title/path/tag/search filter |
 | `folder` | string or null | null | Optional folder prefix |
 | `tag` | string or null | null | Optional tag filter |
-| `include_archive` | boolean | false | Include policy archive folders |
 | `limit` | number | backend default | Max nodes returned |
 
 Response:
@@ -678,13 +675,11 @@ Response:
       "source_type": "vault_note",
       "folder": "Projects/DELAMAIN",
       "tags": ["project/delamain"],
-      "scope": "working",
-      "archived": false,
       "sha256": "...",
       "summary_status": "fresh",
-      "sensitive": false,
-      "ignored": false,
-      "stale": false
+      "generated_metadata_state": "fresh",
+      "staleness_status": "fresh",
+      "sync_status": "ok"
     },
     {
       "id": "reference:api-docs",
@@ -701,17 +696,13 @@ Response:
   ],
   "edges": [
     {
-      "id": "edge_...",
-      "source": "note_...",
-      "target": "note_...",
+      "from": "note_...",
+      "to": "note_...",
       "kind": "wikilink",
       "generated": false,
-      "accepted": true,
-      "rejected": false
+      "accepted": true
     }
   ],
-  "truncated": false,
-  "limit": 500,
   "filters": {
     "source_types": ["vault_note", "workspace_syllabus", "workspace_reference"],
     "folders": ["Projects/DELAMAIN", "reference/api-docs"],
@@ -744,20 +735,13 @@ Response:
   "path": "Projects/DELAMAIN/vault_graph.md",
   "title": "Vault Graph",
   "sha256": "...",
-  "mtime": "2026-04-25T00:00:00Z",
-  "tags": ["project/delamain"],
-  "headings": ["Core Principle"],
-  "backlinks": ["..."],
-  "outgoing_links": ["..."],
-  "preview": "bounded markdown preview...",
-  "preview_truncated": false,
-  "content_kind": "preview",
-  "policy": {
-    "allowed": true,
-    "sensitive_locked": false,
-    "ignored": false,
-    "archive": false
-  }
+      "mtime": "2026-04-25T00:00:00Z",
+      "tags": ["project/delamain"],
+      "backlinks": ["..."],
+      "content": "bounded markdown preview...",
+      "bytes": 1234,
+      "truncated": false,
+      "source_type": "vault_note"
 }
 ```
 
@@ -771,50 +755,34 @@ Request body:
 
 | Field | Type | Description |
 |---|---|---|
-| `conversation_id` | string or null | Conversation for pins and policy context |
-| `prompt` | string or null | Draft user prompt |
-| `selected_note_ids` | string[] | Explicit graph selections |
-| `selected_paths` | string[] | Explicit path selections |
-| `scope` | string or null | Optional graph scope override |
-| `max_capsules` | number or null | Optional count limit |
-| `max_tokens` | number or null | Optional context budget |
+| `prompt` | string | Draft user prompt for candidate scoring |
+| `context_mode` | string or null | Optional context mode override |
+| `paths` | string[] or null | Explicit path selections for compatibility callers |
 
 Response:
 
 ```json
 {
-  "generated_at": "2026-04-25T00:00:00Z",
-  "capsules": [
+  "source": "vault-index",
+  "items": [
     {
-      "id": "cap_...",
-      "source_note_id": "note_...",
+      "id": "Projects/DELAMAIN/vault_graph.md",
       "path": "Projects/DELAMAIN/vault_graph.md",
       "title": "Vault Graph",
-      "kind": "summary",
-      "content": "short bounded context...",
-      "reason": "Pinned note and prompt topic match",
+      "mode": "full_note",
+      "preview": "short bounded preview...",
+      "reason": "prompt_match",
       "score": 0.82,
       "estimated_tokens": 96,
       "sha256": "...",
       "stale": false,
-      "pinned": true,
-      "policy": {
-        "allowed": true,
-        "sensitive_locked": false,
-        "ignored": false
-      }
+      "pinned": false
     }
-  ],
-  "limits": {
-    "max_capsules": 8,
-    "max_tokens": 2000,
-    "estimated_tokens": 96
-  },
-  "warnings": []
+  ]
 }
 ```
 
-Capsule kinds: `summary`, `snippet`, `heading`, `full_note`, `metadata`. Full-note capsules require explicit user selection or a visible backend reason. Workspace document capsules resolve from converted `document.md`; raw rich documents are never prompt payloads.
+Preview items are advisory until pinned/selected by the user. Prompt submission uses `selected_context_paths`, not draft preview suggestions. Workspace document context resolves from converted `document.md`; raw rich documents are never prompt payloads.
 
 Fresh generated tags and note types may influence deterministic preview reasons such as `generated_tag_match` and `note_type_match`. Fresh generated summaries may be used as the payload for oversized selected notes. Stale generated summaries are labeled stale and should not be trusted as payloads.
 
@@ -925,13 +893,18 @@ Pin response shape:
 
 ```json
 {
-  "id": "pin_...",
-  "conversation_id": "conv_...",
-  "source_note_id": "note_...",
-  "path": "Projects/DELAMAIN/vault_graph.md",
-  "title": "Vault Graph",
-  "mode": "summary",
-  "created_at": "2026-04-25T00:00:00Z"
+  "paths": ["Projects/DELAMAIN/vault_graph.md"],
+  "items": [
+    {
+      "id": "pin_...",
+      "conversation_id": "conv_...",
+      "path": "Projects/DELAMAIN/vault_graph.md",
+      "title": "Vault Graph",
+      "mode": "vault_note_pin",
+      "created_at": "2026-04-25T00:00:00Z",
+      "updated_at": "2026-04-25T00:00:00Z"
+    }
+  ]
 }
 ```
 

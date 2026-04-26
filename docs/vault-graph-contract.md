@@ -112,7 +112,7 @@ delamain-vault-index init-folder --kind reference --name "..." --json
 
 `GET /api/vault/note` returns a bounded preview for an index-known, policy-allowed path or note ID.
 
-`POST /api/vault/context/preview` returns the exact bounded capsule set the backend recommends for a prompt or graph selection. It does not submit the prompt. `/api/vault/context-capsules` is a compatibility alias for clients that use the earlier contract name.
+`POST /api/vault/context/preview` returns bounded advisory context items the backend recommends for a prompt or selected paths. It does not submit the prompt. `/api/vault/context-capsules` is a compatibility alias for clients that use the earlier contract name.
 
 Context pin endpoints persist explicit user choices for a conversation.
 
@@ -132,21 +132,13 @@ Maintenance endpoints expose queued proposals and a V1 reversible exact-replacem
 
 ## Graph Response Rules
 
-Default scope is `working`.
-
-Allowed scopes:
-- `active`
-- `working`
-- `long_term`
-- `all`
-
-`all` still excludes ignored and Sensitive-locked paths. Archive content requires either `scope=long_term`, `scope=all`, or an explicit archive filter.
+The current graph endpoint supports bounded `folder`, `tag`, and `limit` filters. Product-level active/working/long-term/archive scope filtering is frontend-side in V1 and must still exclude ignored and Sensitive-locked paths.
 
 Graph responses should include:
 - index status and generated timestamp
 - policy version/hash when available
 - nodes with ID, path, title, source type, tags, folder, archive state, summary availability, stale state
-- edges with source, target, kind, generated/accepted/rejected state
+- edges with `from`, `to`, `kind`, generated, and accepted state
 - generated ownership, duplicate, decision, question, and relation metadata when fresh
 - staleness score/reasons/status and sanitized sync status
 - result limits and truncation state
@@ -162,15 +154,14 @@ Graph responses should not include:
 
 ## Context Capsule Rules
 
-Capsules are the only normal path from vault graph to model context.
+Explicit selected context is the only normal path from vault graph to model context.
 
-Capsule fields:
+Context item fields:
 - `id`
-- `source_note_id`
 - `path`
 - `title`
-- `kind`: `summary`, `snippet`, `heading`, `full_note`, or `metadata`
-- `content`
+- `mode`: `summary`, `snippet`, `heading`, `full_note`, or `metadata`
+- `preview`
 - `reason`
 - `score`
 - `estimated_tokens`
@@ -179,11 +170,11 @@ Capsule fields:
 - `pinned`
 - `policy`
 
-Capsules must be bounded by count and token/byte budget. Full-note capsules require explicit selection or a visible backend reason.
+Context items must be bounded by count and token/byte budget. Full-note payloads require explicit selection or a visible backend reason.
 
-The frontend must show capsules in the context tray above the input before submission.
+The frontend must show pinned/selected context in the context tray above the input before submission. Draft preview suggestions are advisory and are not sent unless the user pins/selects them.
 
-Workspace bundle capsules resolve from converted `document.md` only. Failed, `needs_ocr`, and `needs_reprocess` bundles may appear in graph/maintenance but are excluded from default context preview.
+Workspace bundle context resolves from converted `document.md` only. Failed, `needs_ocr`, and `needs_reprocess` bundles may appear in graph/maintenance but are excluded from default context preview.
 
 Fresh generated tags and note types participate in deterministic context preview scoring. Fresh generated summaries can be used as the payload for oversized selected notes; stale summaries fall back to source snippets/headings instead of being trusted.
 

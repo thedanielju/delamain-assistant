@@ -208,8 +208,7 @@ export interface ThemeConfig {
 export type RightPanelId = 'settings' | 'health' | 'workers' | 'usage' | 'syncthing' | 'vault' | null
 
 // ── Vault index ───────────────────────────────────────────────────────────────
-// Shape matches backend Prompt D. Endpoints may 404 until Prompt D lands;
-// the frontend degrades gracefully in that case.
+// Shape matches the active vault graph and context endpoints.
 
 export interface VaultNode {
   id: string

@@ -49,6 +49,7 @@ class RunManager:
         self.tool_registry = tool_registry or default_tool_registry(config)
         self._tasks: set[asyncio.Task] = set()
         self._conversation_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._run_event_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def recover_on_startup(self) -> None:
         await self.db.execute(
@@ -103,6 +104,116 @@ class RunManager:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def cancel_run(self, run_id: str) -> dict[str, Any] | None:
+        row = await self.db.fetchone("SELECT * FROM runs WHERE id = ?", (run_id,))
+        if row is None:
+            return None
+        if row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+            return row
+        async with self._run_event_locks[run_id]:
+            row = await self.db.fetchone("SELECT * FROM runs WHERE id = ?", (run_id,))
+            if row is None:
+                return None
+            if row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+                return row
+            pending_permissions = await self.db.fetchall(
+                """
+                SELECT id
+                FROM permissions
+                WHERE run_id = ?
+                  AND status = 'pending'
+                ORDER BY created_at
+                """,
+                (run_id,),
+            )
+            started_tools = await self.db.fetchall(
+                """
+                SELECT id
+                FROM tool_calls
+                WHERE run_id = ?
+                  AND status = 'started'
+                ORDER BY created_at
+                """,
+                (run_id,),
+            )
+            assistant_message_id = row["assistant_message_id"]
+            for permission in pending_permissions:
+                await self.db.execute(
+                    """
+                    UPDATE permissions
+                    SET status = 'resolved',
+                        decision = 'denied',
+                        resolver = 'system',
+                        note = 'Run cancelled while awaiting approval',
+                        resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE id = ?
+                    """,
+                    (permission["id"],),
+                )
+            for tool in started_tools:
+                await self.db.execute(
+                    """
+                    UPDATE tool_calls
+                    SET status = 'cancelled',
+                        error_message = 'Run cancelled',
+                        completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE id = ?
+                    """,
+                    (tool["id"],),
+                )
+            await self.db.execute(
+                """
+                UPDATE runs
+                SET status = 'cancelled',
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (run_id,),
+            )
+            updated = await self.db.fetchone("SELECT * FROM runs WHERE id = ?", (run_id,))
+            for permission in pending_permissions:
+                await self.bus.emit(
+                    conversation_id=row["conversation_id"],
+                    run_id=run_id,
+                    event_type="permission.resolved",
+                    payload={
+                        "run_id": run_id,
+                        "permission_id": permission["id"],
+                        "decision": "denied",
+                        "resolver": "system",
+                        "note": "Run cancelled while awaiting approval",
+                    },
+                )
+            for tool in started_tools:
+                if assistant_message_id:
+                    await self.bus.emit(
+                        conversation_id=row["conversation_id"],
+                        run_id=run_id,
+                        event_type="tool.finished",
+                        payload={
+                            "tool_call_id": tool["id"],
+                            "assistant_message_id": assistant_message_id,
+                            "status": "cancelled",
+                            "duration_ms": 0,
+                            "result_summary": "Run cancelled",
+                            "stdout": "",
+                            "stderr": "Run cancelled",
+                        },
+                    )
+            await self.bus.emit(
+                conversation_id=updated["conversation_id"],
+                run_id=run_id,
+                event_type="error",
+                payload={"code": "RUN_CANCELLED", "message": "Run cancelled", "details": None},
+            )
+            await self.bus.emit(
+                conversation_id=updated["conversation_id"],
+                run_id=run_id,
+                event_type="run.completed",
+                payload={"run_id": run_id, "status": "cancelled"},
+            )
+            return updated
+
     async def process_run(self, run_id: str) -> None:
         run = await self.db.fetchone("SELECT * FROM runs WHERE id = ?", (run_id,))
         if run is None:
@@ -126,22 +237,25 @@ class RunManager:
                 """,
                 (assistant_message_id, conversation_id, run_id),
             )
-            await self.db.execute(
-                """
-                UPDATE runs
-                SET status = 'running',
-                    assistant_message_id = ?,
-                    started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                """,
-                (assistant_message_id, run_id),
-            )
-            await self.bus.emit(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                event_type="run.started",
-                payload={"run_id": run_id, "model_route": run["model_route"]},
-            )
+            async with self._run_event_locks[run_id]:
+                if await self._run_is_cancelled(run_id):
+                    raise _RunCancelled("Run cancelled before start")
+                await self.db.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'running',
+                        assistant_message_id = ?,
+                        started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE id = ?
+                    """,
+                    (assistant_message_id, run_id),
+                )
+                await self.bus.emit(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    event_type="run.started",
+                    payload={"run_id": run_id, "model_route": run["model_route"]},
+                )
 
             selected_context_paths, sensitive_unlocked = await self._selected_context_for_run(run)
             loaded_context = load_context_for_run(
@@ -151,7 +265,7 @@ class RunManager:
                 sensitive_unlocked=sensitive_unlocked,
             )
             if loaded_context.clock_refresh:
-                await self.bus.emit(
+                await self._emit_run_event(
                     conversation_id=conversation_id,
                     run_id=run_id,
                     event_type="audit",
@@ -163,7 +277,7 @@ class RunManager:
                 )
             await self._persist_context_loads(run_id, loaded_context.items)
             await self._persist_run_selected_context(run_id, loaded_context.items)
-            await self.bus.emit(
+            await self._emit_run_event(
                 conversation_id=conversation_id,
                 run_id=run_id,
                 event_type="context.loaded",
@@ -192,27 +306,30 @@ class RunManager:
                 """,
                 (assistant_text, assistant_message_id),
             )
-            await self.bus.emit(
+            await self._emit_run_event(
                 conversation_id=conversation_id,
                 run_id=run_id,
                 event_type="message.completed",
                 payload={"message_id": assistant_message_id, "finish_reason": "stop"},
             )
-            await self.db.execute(
-                """
-                UPDATE runs
-                SET status = 'completed',
-                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                """,
-                (run_id,),
-            )
-            await self.bus.emit(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                event_type="run.completed",
-                payload={"run_id": run_id, "status": "completed"},
-            )
+            async with self._run_event_locks[run_id]:
+                if await self._run_is_cancelled(run_id):
+                    raise _RunCancelled("Run cancelled before completion")
+                await self.db.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'completed',
+                        completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE id = ?
+                    """,
+                    (run_id,),
+                )
+                await self.bus.emit(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    event_type="run.completed",
+                    payload={"run_id": run_id, "status": "completed"},
+                )
         except _RunCancelled:
             await self._mark_assistant_message_cancelled(assistant_message_id)
             return
@@ -320,7 +437,7 @@ class RunManager:
                         if budget["status"] == "hard" and budget["hard_override_enabled"]
                         else "model.budget_threshold"
                     )
-                    await self.bus.emit(
+                    await self._emit_run_event(
                         conversation_id=run["conversation_id"],
                         run_id=run["id"],
                         event_type="audit",
@@ -361,7 +478,7 @@ class RunManager:
                         ),
                     )
                     last_exc = RuntimeError("Copilot budget hard threshold reached")
-                    await self.bus.emit(
+                    await self._emit_run_event(
                         conversation_id=run["conversation_id"],
                         run_id=run["id"],
                         event_type="audit",
@@ -377,7 +494,7 @@ class RunManager:
                     )
                     continue
             if attempt.fallback_from is not None:
-                await self.bus.emit(
+                await self._emit_run_event(
                     conversation_id=run["conversation_id"],
                     run_id=run["id"],
                     event_type="audit",
@@ -425,7 +542,7 @@ class RunManager:
                     )
                 actual_model = str(model_result.get("model") or attempt.model_route)
                 if actual_model != attempt.model_route:
-                    await self.bus.emit(
+                    await self._emit_run_event(
                         conversation_id=run["conversation_id"],
                         run_id=run["id"],
                         event_type="audit",
@@ -451,7 +568,7 @@ class RunManager:
                     """,
                     (str(exc), model_call_id),
                 )
-                await self.bus.emit(
+                await self._emit_run_event(
                     conversation_id=run["conversation_id"],
                     run_id=run["id"],
                     event_type="audit",
@@ -498,7 +615,7 @@ class RunManager:
                 ),
             )
             if usage:
-                await self.bus.emit(
+                await self._emit_run_event(
                     conversation_id=run["conversation_id"],
                     run_id=run["id"],
                     event_type="model.usage",
@@ -521,7 +638,7 @@ class RunManager:
         if not isinstance(arguments, dict):
             arguments = {}
 
-        await self.bus.emit(
+        await self._emit_run_event(
             conversation_id=run["conversation_id"],
             run_id=run["id"],
             event_type="tool.started",
@@ -607,7 +724,7 @@ class RunManager:
                 """,
                 (str(exc), tool_call_id),
             )
-            await self.bus.emit(
+            await self._emit_run_event(
                 conversation_id=run["conversation_id"],
                 run_id=run["id"],
                 event_type="tool.finished",
@@ -634,7 +751,7 @@ class RunManager:
             )
 
         if stdout:
-            await self.bus.emit(
+            await self._emit_run_event(
                 conversation_id=run["conversation_id"],
                 run_id=run["id"],
                 event_type="tool.output",
@@ -647,7 +764,7 @@ class RunManager:
                 },
             )
         if stderr:
-            await self.bus.emit(
+            await self._emit_run_event(
                 conversation_id=run["conversation_id"],
                 run_id=run["id"],
                 event_type="tool.output",
@@ -660,7 +777,7 @@ class RunManager:
                 },
             )
         if result.get("truncated"):
-            await self.bus.emit(
+            await self._emit_run_event(
                 conversation_id=run["conversation_id"],
                 run_id=run["id"],
                 event_type="error",
@@ -686,7 +803,7 @@ class RunManager:
                 tool_call_id,
             ),
         )
-        await self.bus.emit(
+        await self._emit_run_event(
             conversation_id=run["conversation_id"],
             run_id=run["id"],
             event_type="tool.finished",
@@ -749,7 +866,7 @@ class RunManager:
             """,
             (run["id"],),
         )
-        await self.bus.emit(
+        await self._emit_run_event(
             conversation_id=run["conversation_id"],
             run_id=run["id"],
             event_type="permission.requested",
@@ -817,7 +934,7 @@ class RunManager:
             """,
             (decision, note, resolver, permission_id),
         )
-        await self.bus.emit(
+        await self._emit_run_event(
             conversation_id=conversation_id,
             run_id=run_id,
             event_type="permission.resolved",
@@ -848,12 +965,30 @@ class RunManager:
         }
         if reason:
             payload["reason"] = reason[:500]
-        await self.bus.emit(
+        await self._emit_run_event(
             conversation_id=run["conversation_id"],
             run_id=run["id"],
             event_type="audit",
             payload=payload,
         )
+
+    async def _emit_run_event(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        async with self._run_event_locks[run_id]:
+            if await self._run_is_cancelled(run_id):
+                raise _RunCancelled(f"Run cancelled before emitting {event_type}")
+            return await self.bus.emit(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                event_type=event_type,
+                payload=payload,
+            )
 
     async def _emit_text_delta(
         self,
@@ -864,21 +999,24 @@ class RunManager:
         text: str,
     ) -> None:
         for chunk in _chunks(text, 96):
-            await self.db.execute(
-                """
-                UPDATE messages
-                SET content = content || ?,
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                """,
-                (chunk, message_id),
-            )
-            await self.bus.emit(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                event_type="message.delta",
-                payload={"message_id": message_id, "text": chunk},
-            )
+            async with self._run_event_locks[run_id]:
+                if await self._run_is_cancelled(run_id):
+                    raise _RunCancelled("Run cancelled while streaming assistant text")
+                await self.db.execute(
+                    """
+                    UPDATE messages
+                    SET content = content || ?,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE id = ?
+                    """,
+                    (chunk, message_id),
+                )
+                await self.bus.emit(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    event_type="message.delta",
+                    payload={"message_id": message_id, "text": chunk},
+                )
             await asyncio.sleep(0)
 
     async def _mark_assistant_message_cancelled(self, assistant_message_id: str) -> None:
@@ -972,34 +1110,37 @@ class RunManager:
     ) -> None:
         code = exc.code if isinstance(exc, DelamainError) else "RUN_FAILED"
         message = str(exc)
-        await self.db.execute(
-            """
-            UPDATE runs
-            SET status = 'failed',
-                error_code = ?,
-                error_message = ?,
-                completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            WHERE id = ?
-            """,
-            (code, message, run["id"]),
-        )
-        if assistant_message_id:
+        async with self._run_event_locks[run["id"]]:
+            if await self._run_is_cancelled(run["id"]):
+                return
             await self.db.execute(
-                "UPDATE messages SET status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-                (assistant_message_id,),
+                """
+                UPDATE runs
+                SET status = 'failed',
+                    error_code = ?,
+                    error_message = ?,
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (code, message, run["id"]),
             )
-        await self.bus.emit(
-            conversation_id=run["conversation_id"],
-            run_id=run["id"],
-            event_type="error",
-            payload={"code": code, "message": message, "details": None},
-        )
-        await self.bus.emit(
-            conversation_id=run["conversation_id"],
-            run_id=run["id"],
-            event_type="run.completed",
-            payload={"run_id": run["id"], "status": "failed"},
-        )
+            if assistant_message_id:
+                await self.db.execute(
+                    "UPDATE messages SET status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+                    (assistant_message_id,),
+                )
+            await self.bus.emit(
+                conversation_id=run["conversation_id"],
+                run_id=run["id"],
+                event_type="error",
+                payload={"code": code, "message": message, "details": None},
+            )
+            await self.bus.emit(
+                conversation_id=run["conversation_id"],
+                run_id=run["id"],
+                event_type="run.completed",
+                payload={"run_id": run["id"], "status": "failed"},
+            )
 
     async def _interrupt_run(
         self,
