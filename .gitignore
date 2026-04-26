@@ -23,4 +23,5 @@ venv/
 # Local-only Codex orchestration docs
 AGENTS.md
 docs/DELAMAIN_AGENT_STATE.md
+docs/DELAMAIN_AGENT_CHANGELOG.md
 docs/agent-model-routing.md

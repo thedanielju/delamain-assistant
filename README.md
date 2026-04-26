@@ -62,10 +62,12 @@ This repository includes:
 
 ## Current Status
 
-As of 2026-04-24:
+As of 2026-04-26:
 
-- the backend contract described for Phase 2 is implemented in this repo
-- the frontend is wired against that contract
+- the backend foundation is broadly implemented, tested, and production-verified
+- the active project phase is frontend UI/UX iteration, accessibility, and operational polish
+- backend work should generally be focused contract accommodation, bug fixing, or policy-safe extension
+- the frontend is wired against the current backend contract
 - the production backend on `serrano` runs on `127.0.0.1:8420`
 - the `serrano` frontend service runs on `127.0.0.1:3000`
 - a dev-local backend sidecar may still exist on `127.0.0.1:8421`, but the public path no longer depends on it
@@ -496,7 +498,9 @@ There is also a guarded live smoke script:
 python scripts/live_model_smoke.py
 ```
 
-It refuses to run unless live model calls are explicitly enabled.
+It refuses to run unless live model calls are explicitly enabled. This script sends real model requests through the configured Copilot routes, so skip it when Copilot is rate-limited or when you do not want to spend quota.
+
+`pnpm browser:smoke` is separate from this live model smoke. It is a UI-only Playwright check and does not use model quota.
 
 ## Important Documents
 
