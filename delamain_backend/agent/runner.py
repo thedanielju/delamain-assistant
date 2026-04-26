@@ -256,6 +256,8 @@ class RunManager:
             if await self._run_is_cancelled(run["id"]):
                 return "".join(text_parts) or "Cancelled."
             model_result = await self._call_model_with_fallback(run, messages)
+            if await self._run_is_cancelled(run["id"]):
+                return "".join(text_parts) or "Cancelled."
             text = str(model_result.get("text") or "")
             if text:
                 text_parts.append(text)
@@ -570,6 +572,8 @@ class RunManager:
                     sensitive_unlocked=bool(conversation and conversation["sensitive_unlocked"]),
                 ),
             )
+            if await self._run_is_cancelled(run["id"]):
+                raise _RunCancelled(f"Run cancelled while executing tool call: {tool_name}")
         except _RunCancelled as exc:
             await self.db.execute(
                 """
@@ -580,20 +584,6 @@ class RunManager:
                 WHERE id = ?
                 """,
                 (str(exc), tool_call_id),
-            )
-            await self.bus.emit(
-                conversation_id=run["conversation_id"],
-                run_id=run["id"],
-                event_type="tool.finished",
-                payload={
-                    "tool_call_id": tool_call_id,
-                    "assistant_message_id": assistant_message_id,
-                    "status": "cancelled",
-                    "duration_ms": 0,
-                    "result_summary": str(exc)[:200],
-                    "stdout": "",
-                    "stderr": str(exc),
-                },
             )
             raise
         except Exception as exc:
@@ -874,6 +864,15 @@ class RunManager:
         text: str,
     ) -> None:
         for chunk in _chunks(text, 96):
+            await self.db.execute(
+                """
+                UPDATE messages
+                SET content = content || ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (chunk, message_id),
+            )
             await self.bus.emit(
                 conversation_id=conversation_id,
                 run_id=run_id,

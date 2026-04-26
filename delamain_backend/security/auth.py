@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -79,8 +80,11 @@ class CloudflareAccessValidator:
         now = time.monotonic()
         if self._jwks is not None and now < self._jwks_expires_at:
             return self._jwks
-        with urllib.request.urlopen(self.config.jwks_url, timeout=10) as response:
-            loaded = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(self.config.jwks_url, timeout=10) as response:
+                loaded = json.loads(response.read().decode("utf-8"))
+        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise AuthError("Cloudflare Access JWKS could not be loaded") from exc
         if not isinstance(loaded, dict) or not isinstance(loaded.get("keys"), list):
             raise AuthError("Cloudflare Access JWKS response is invalid")
         self._jwks = loaded

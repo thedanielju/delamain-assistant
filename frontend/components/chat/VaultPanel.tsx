@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import {
   AlertCircle,
   Check,
@@ -335,6 +335,7 @@ export function VaultPanel({ conversationId, pinnedItems = [], onPinToContext }:
   const [folderInitStatus, setFolderInitStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [folderInitMessage, setFolderInitMessage] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const noteRequestRef = useRef(0)
 
   const pinnedPaths = useMemo(() => new Set(pinnedItems.map((item) => item.path)), [pinnedItems])
   const excludedPaths = useMemo(() => new Set(exclusions.map((item) => item.path)), [exclusions])
@@ -386,14 +387,20 @@ export function VaultPanel({ conversationId, pinnedItems = [], onPinToContext }:
   }, [load])
 
   const loadNote = useCallback((path: string) => {
+    const requestId = noteRequestRef.current + 1
+    noteRequestRef.current = requestId
     setSelectedPath(path)
     setTab('preview')
     setNoteLoading(true)
     setNeighborhood(null)
     setNeighborhoodStatus('idle')
     api.getVaultNote(path)
-      .then(setNote)
+      .then((note) => {
+        if (noteRequestRef.current !== requestId) return
+        setNote(note)
+      })
       .catch(() => {
+        if (noteRequestRef.current !== requestId) return
         setNote({
           path,
           title: titleFromPath(path),
@@ -402,7 +409,10 @@ export function VaultPanel({ conversationId, pinnedItems = [], onPinToContext }:
           backlinks: [],
         })
       })
-      .finally(() => setNoteLoading(false))
+      .finally(() => {
+        if (noteRequestRef.current !== requestId) return
+        setNoteLoading(false)
+      })
   }, [])
 
   const loadNeighborhood = useCallback(async (path: string, hops: 1 | 2) => {

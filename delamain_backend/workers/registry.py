@@ -357,7 +357,7 @@ async def _probe_winpc_launch(worker_type: WorkerType) -> dict[str, dict[str, An
         }
 
     detail = _first_non_empty(stderr, stdout)
-    lower = detail.lower()
+    lower = (detail or "").lower()
     if _is_winpc_transport_error(lower):
         reason = detail or "SSH to winpc is unavailable"
         transport = {"status": "unavailable", "reason": f"WinPC SSH unavailable: {reason}"}
@@ -606,8 +606,10 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _first_non_empty(*texts: str) -> str | None:
+def _first_non_empty(*texts: str | None) -> str | None:
     for text in texts:
+        if not text:
+            continue
         for line in text.splitlines():
             stripped = line.strip()
             if stripped:

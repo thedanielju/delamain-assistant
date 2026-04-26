@@ -1,6 +1,6 @@
 # Vault Graph Contract
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 This document defines the contract for DELAMAIN's unified graph and context-capsule slice. V1 is intentionally conservative: structural index, workspace document ingestion, policy enforcement, and reversible exact maintenance actions first; AI enrichment and broader maintenance actions later.
 
@@ -126,7 +126,7 @@ Context pin endpoints persist explicit user choices for a conversation.
 
 `GET /api/vault/enrichment/relations` returns generated relationship candidates plus any accepted/rejected user feedback.
 
-`POST /api/vault/enrichment/relations/feedback` records a user decision for a generated relationship candidate. Accepted generated relations appear as `accepted_generated` graph edges. Rejected generated relations are remembered and suppressed.
+`POST /api/vault/enrichment/relations/feedback` records a user decision for a generated relationship candidate. Accepted generated relations appear as `accepted_generated` graph edges. Rejected generated relations are remembered and suppressed. Relation candidates are visible only when both endpoints are in the current policy-allowed graph and the source generated metadata still matches the indexed node `sha256`.
 
 Maintenance endpoints expose queued proposals and a V1 reversible exact-replacement flow. Unsupported proposals can still be applied as status-only audit records, but source-file writes are limited to allowlisted exact text replacements on indexed Obsidian vault notes. Diff, apply, reject, and revert are available for that allowlist. They do not hard-delete files in V1.
 

@@ -29,6 +29,78 @@ async def cancel_run(
         raise HTTPException(status_code=404, detail="Run not found")
     if row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
         return {**row, "incognito_route": bool(row["incognito_route"])}
+    pending_permissions = await db.fetchall(
+        """
+        SELECT id
+        FROM permissions
+        WHERE run_id = ?
+          AND status = 'pending'
+        ORDER BY created_at
+        """,
+        (run_id,),
+    )
+    started_tools = await db.fetchall(
+        """
+        SELECT id
+        FROM tool_calls
+        WHERE run_id = ?
+          AND status = 'started'
+        ORDER BY created_at
+        """,
+        (run_id,),
+    )
+    assistant_message_id = row["assistant_message_id"]
+    for permission in pending_permissions:
+        await db.execute(
+            """
+            UPDATE permissions
+            SET status = 'resolved',
+                decision = 'denied',
+                resolver = 'system',
+                note = 'Run cancelled while awaiting approval',
+                resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (permission["id"],),
+        )
+        await bus.emit(
+            conversation_id=row["conversation_id"],
+            run_id=run_id,
+            event_type="permission.resolved",
+            payload={
+                "run_id": run_id,
+                "permission_id": permission["id"],
+                "decision": "denied",
+                "resolver": "system",
+                "note": "Run cancelled while awaiting approval",
+            },
+        )
+    for tool in started_tools:
+        await db.execute(
+            """
+            UPDATE tool_calls
+            SET status = 'cancelled',
+                error_message = 'Run cancelled',
+                completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (tool["id"],),
+        )
+        if assistant_message_id:
+            await bus.emit(
+                conversation_id=row["conversation_id"],
+                run_id=run_id,
+                event_type="tool.finished",
+                payload={
+                    "tool_call_id": tool["id"],
+                    "assistant_message_id": assistant_message_id,
+                    "status": "cancelled",
+                    "duration_ms": 0,
+                    "result_summary": "Run cancelled",
+                    "stdout": "",
+                    "stderr": "Run cancelled",
+                },
+            )
     await db.execute(
         """
         UPDATE runs

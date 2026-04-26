@@ -110,7 +110,7 @@ Current user-visible model selection surfaces are:
 - default model
   - persisted backend setting used for new runs unless overridden
 - task model
-  - browser-local setting used today for worker summaries and similar background tasks
+  - persisted backend setting used for worker summaries, vault enrichment, and similar background tasks
 
 ## Architecture
 

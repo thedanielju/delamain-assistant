@@ -36,12 +36,18 @@ export function ComposerContextTray({ items, onRemove, onOpenVault }: ComposerCo
               className={cn(
                 'group inline-flex max-w-[260px] items-center gap-1.5 rounded-md border px-2 py-1',
                 'border-white/[0.08] bg-[#101010] text-[10px] font-mono text-[#aaaaaa]',
+                item.pinned === false && 'border-white/[0.05] text-[#666666]',
                 item.excluded && 'border-[var(--accent-pink)]/30 text-[var(--accent-pink)]'
               )}
-              title={`${item.path}${item.preview ? `\n\n${item.preview}` : ''}`}
+              title={`${item.pinned === false ? 'Suggested context, not submitted\n' : ''}${item.path}${item.preview ? `\n\n${item.preview}` : ''}`}
             >
-              <FileText size={10} className="flex-shrink-0 text-[#666666]" />
+              {item.pinned === false ? (
+                <FileText size={10} className="flex-shrink-0 text-[#444444]" />
+              ) : (
+                <Pin size={10} className="flex-shrink-0 text-[var(--accent-blue)]" />
+              )}
               <span className="truncate">{item.title || item.path}</span>
+              {item.pinned === false && <span className="text-[#444444]">suggested</span>}
               {typeof item.tokenEstimate === 'number' && (
                 <span className="text-[#444444]">{item.tokenEstimate}t</span>
               )}

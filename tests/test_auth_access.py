@@ -51,6 +51,24 @@ def test_access_required_accepts_valid_cloudflare_jwt(test_config, tmp_path):
         assert response.json()["status"] == "ok"
 
 
+def test_access_required_returns_auth_response_when_jwks_fetch_fails(
+    test_config, tmp_path, monkeypatch
+):
+    def fail_urlopen(*args, **kwargs):
+        raise OSError("jwks unavailable")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
+    app = create_app(_access_config(test_config, tmp_path, jwks_url="https://example.test/jwks"))
+    token = jwt.encode({"sub": "daniel"}, "secret", algorithm="HS256", headers={"kid": "test-key"})
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/health",
+            headers={"Cf-Access-Jwt-Assertion": token},
+        )
+        assert response.status_code == 401
+        assert response.json()["detail"]["code"] == "auth_required"
+
+
 def _access_config(test_config, tmp_path, jwks_url: str | None = None):
     if jwks_url is None:
         jwks_path = tmp_path / "jwks.json"

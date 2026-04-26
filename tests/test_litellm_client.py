@@ -1,4 +1,5 @@
 from delamain_backend.agent.litellm_client import (
+    _read_litellm_process_result,
     format_messages_for_api_family,
     normalize_model_result,
 )
@@ -179,4 +180,18 @@ def test_formats_responses_api_preserves_assistant_text_with_tool_call():
         "type": "function_call_output",
         "call_id": "call_1",
         "output": "noon",
+    }
+
+
+def test_reads_child_process_result_without_queue_empty_probe():
+    class FakeQueue:
+        def empty(self):
+            raise AssertionError("empty should not be used for multiprocessing queues")
+
+        def get(self, *, timeout):
+            assert timeout == 5
+            return ("ok", {"text": "done"})
+
+    assert _read_litellm_process_result(FakeQueue(), "github_copilot/gpt-5-mini") == {
+        "text": "done"
     }

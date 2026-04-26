@@ -1042,14 +1042,18 @@ class WorkerPtyBroker:
         self.closed = False
 
     async def start(self) -> None:
-        self.reader = await self.manager._create_pipe_reader(self.row)
-        await self.manager._enable_pipe_pane(
-            self.row["tmux_session"],
-            self.row["host"],
-            self.reader.pipe_command,
-            tmux_socket=self.row.get("tmux_socket"),
-        )
-        self.task = asyncio.create_task(self._read_loop())
+        try:
+            self.reader = await self.manager._create_pipe_reader(self.row)
+            await self.manager._enable_pipe_pane(
+                self.row["tmux_session"],
+                self.row["host"],
+                self.reader.pipe_command,
+                tmux_socket=self.row.get("tmux_socket"),
+            )
+            self.task = asyncio.create_task(self._read_loop())
+        except Exception:
+            await self.close()
+            raise
 
     def subscribe(self) -> WorkerPtySubscription:
         subscription = WorkerPtySubscription(self)
@@ -1065,11 +1069,12 @@ class WorkerPtyBroker:
         if self.closed:
             return
         self.closed = True
-        await self.manager._disable_pipe_pane(
-            self.row["tmux_session"],
-            self.row["host"],
-            tmux_socket=self.row.get("tmux_socket"),
-        )
+        with contextlib.suppress(Exception):
+            await self.manager._disable_pipe_pane(
+                self.row["tmux_session"],
+                self.row["host"],
+                tmux_socket=self.row.get("tmux_socket"),
+            )
         current_task = asyncio.current_task()
         if self.task is not None and self.task is not current_task:
             self.task.cancel()
@@ -1239,8 +1244,10 @@ def _is_winpc_wsl_error(detail: str) -> bool:
     )
 
 
-def _first_non_empty(*texts: str) -> str | None:
+def _first_non_empty(*texts: str | None) -> str | None:
     for text in texts:
+        if not text:
+            continue
         for line in text.splitlines():
             stripped = line.strip()
             if stripped:

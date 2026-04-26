@@ -59,6 +59,27 @@ class ReportedRouteMismatchModelClient:
         }
 
 
+class TextThenBadToolModelClient:
+    async def complete(self, *, model_route, messages, tools=None):
+        return {
+            "id": "text_then_bad_tool",
+            "model": model_route,
+            "api_family": "responses",
+            "text": "partial streamed text",
+            "tool_calls": [
+                {
+                    "id": "call_missing",
+                    "name": "missing_tool",
+                    "arguments": {},
+                    "source_api_family": "responses",
+                    "raw": {},
+                }
+            ],
+            "usage": None,
+            "raw": {},
+        }
+
+
 def test_startup_marks_running_runs_interrupted(test_config):
     _seed_running_run(test_config.database.path)
     app = create_app(test_config)
@@ -122,6 +143,25 @@ def test_cancel_running_run_persists_cancel_events(test_config):
         ]
         assert "error" in events
         assert "run.completed" in events
+        terminal_index = len(events) - 1 - events[::-1].index("run.completed")
+        assert "message.delta" not in events[terminal_index + 1 :]
+
+
+def test_failed_run_preserves_streamed_assistant_text(test_config):
+    app = create_app(test_config, model_client=TextThenBadToolModelClient())
+    with TestClient(app) as client:
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        run_id = client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "emit text then fail"},
+        ).json()["run_id"]
+        run = _wait_for_run(client, run_id)
+        assert run["status"] == "failed"
+
+        messages = client.get(f"/api/conversations/{conversation_id}/messages").json()
+        assistant = next(message for message in messages if message["role"] == "assistant")
+        assert assistant["status"] == "failed"
+        assert assistant["content"] == "partial streamed text"
 
 
 @pytest.mark.asyncio

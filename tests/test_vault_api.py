@@ -656,17 +656,9 @@ def test_vault_graph_neighborhood_returns_bounded_policy_filtered_neighbors(test
     ]
     assert payload["omitted"]["policy_nodes"] == 2
     assert {item["reason"] for item in payload["policy_omissions"]} == {"ignored", "path_policy"}
-    assert "Private/hidden.md" in {item["path"] for item in payload["policy_omissions"]}
-    restricted = [item for item in payload["policy_omissions"] if item["reason"] == "path_policy"]
-    assert restricted == [
-        {
-            "id": None,
-            "path": None,
-            "title": "Policy-excluded node",
-            "source_type": "vault_note",
-            "reason": "path_policy",
-        }
-    ]
+    assert all(item["id"] is None for item in payload["policy_omissions"])
+    assert all(item["path"] is None for item in payload["policy_omissions"])
+    assert all(item["title"] == "Policy-excluded node" for item in payload["policy_omissions"])
 
 
 def test_vault_graph_neighborhood_limit_reports_omitted_nodes(test_config):
@@ -745,6 +737,114 @@ def test_vault_graph_navigation_blocks_policy_excluded_targets(test_config):
 
     assert ignored.status_code == 403
     assert restricted.status_code == 403
+
+
+def test_generated_relations_filter_stale_source_sha(test_config):
+    _write_vault_fixture(test_config)
+    note = test_config.paths.vault / "Projects" / "DELAMAIN" / "note.md"
+    owner = test_config.paths.vault / "Projects" / "DELAMAIN" / "owner.md"
+    owner.write_text("# Owner\n\nCurrent owner note.\n", encoding="utf-8")
+    graph_path = test_config.paths.llm_workspace / "vault-index" / "graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph["nodes"][0]["sha256"] = hashlib.sha256(note.read_bytes()).hexdigest()
+    graph["nodes"].append(
+        {
+            "id": "Projects/DELAMAIN/owner.md",
+            "path": "Projects/DELAMAIN/owner.md",
+            "title": "Owner",
+            "sha256": hashlib.sha256(owner.read_bytes()).hexdigest(),
+        }
+    )
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    write_generated_metadata(
+        test_config,
+        {
+            "items": {
+                "Projects/DELAMAIN/note.md": {
+                    "path": "Projects/DELAMAIN/note.md",
+                    "sha256": "stale-sha",
+                    "generated_at": "2026-04-25T00:00:00Z",
+                    "relation_candidates": [
+                        {
+                            "path": "Projects/DELAMAIN/owner.md",
+                            "relation": "owned_by",
+                            "reason": "Stale generated relation.",
+                        }
+                    ],
+                }
+            }
+        },
+    )
+    app = create_app(test_config)
+
+    with TestClient(app) as client:
+        relations = client.get("/api/vault/enrichment/relations")
+        graph_response = client.get("/api/vault/graph")
+
+    assert relations.status_code == 200
+    assert relations.json()["relations"] == []
+    assert graph_response.status_code == 200
+    assert not any(edge.get("generated") for edge in graph_response.json()["edges"])
+
+
+def test_generated_relations_filter_policy_blocked_paths(test_config):
+    _write_vault_fixture(test_config)
+    note = test_config.paths.vault / "Projects" / "DELAMAIN" / "note.md"
+    graph_path = test_config.paths.llm_workspace / "vault-index" / "graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    note_sha = hashlib.sha256(note.read_bytes()).hexdigest()
+    graph["nodes"][0]["sha256"] = note_sha
+    graph["nodes"].append(
+        {
+            "id": "Projects/DELAMAIN/blocked.md",
+            "path": "Projects/DELAMAIN/blocked.md",
+            "title": "Blocked",
+            "policy_state": "blocked",
+            "sha256": "blocked-sha",
+        }
+    )
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    write_generated_metadata(
+        test_config,
+        {
+            "items": {
+                "Projects/DELAMAIN/note.md": {
+                    "path": "Projects/DELAMAIN/note.md",
+                    "sha256": note_sha,
+                    "generated_at": "2026-04-25T00:00:00Z",
+                    "relation_candidates": [
+                        {
+                            "path": "Projects/DELAMAIN/blocked.md",
+                            "relation": "related",
+                            "reason": "Blocked target must not leak.",
+                        }
+                    ],
+                },
+                "Projects/DELAMAIN/blocked.md": {
+                    "path": "Projects/DELAMAIN/blocked.md",
+                    "sha256": "blocked-sha",
+                    "generated_at": "2026-04-25T00:00:00Z",
+                    "relation_candidates": [
+                        {
+                            "path": "Projects/DELAMAIN/note.md",
+                            "relation": "related",
+                            "reason": "Blocked source must not leak.",
+                        }
+                    ],
+                },
+            }
+        },
+    )
+    app = create_app(test_config)
+
+    with TestClient(app) as client:
+        relations = client.get("/api/vault/enrichment/relations")
+        graph_response = client.get("/api/vault/graph")
+
+    assert relations.status_code == 200
+    assert relations.json()["relations"] == []
+    assert graph_response.status_code == 200
+    assert not any(edge.get("generated") for edge in graph_response.json()["edges"])
 
 
 def test_vault_index_heartbeat_run_once_executes_after_inactivity(test_config):

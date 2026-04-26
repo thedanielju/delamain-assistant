@@ -811,6 +811,27 @@ def test_winpc_readiness_reports_missing_command(shell_worker_registry, monkeypa
     assert "Worker command is not available" in readiness["checks"]["command"]["reason"]
 
 
+def test_winpc_readiness_handles_empty_failed_probe_output(shell_worker_registry, monkeypatch):
+    import delamain_backend.workers.registry as worker_registry_module
+
+    async def fake_run_probe(argv, *, timeout_seconds=6.0, env=None):
+        return {
+            "exit_code": 255,
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": 10,
+        }
+
+    monkeypatch.setattr(worker_registry_module, "_run_probe", fake_run_probe)
+    readiness = _event_loop().run_until_complete(
+        shell_worker_registry.readiness_for("remote_worker", refresh=True)
+    )
+    assert readiness["status"] == "unavailable"
+    assert readiness["reason"] == "Failed to probe WinPC worker readiness"
+    assert readiness["checks"]["tmux"]["status"] == "unknown"
+    assert readiness["checks"]["command"]["status"] == "unknown"
+
+
 def test_winpc_codex_readiness_reports_unauthenticated(test_config, monkeypatch):
     import delamain_backend.workers.registry as worker_registry_module
 
@@ -1132,6 +1153,74 @@ def test_worker_pty_subscription_bounds_buffer_and_tracks_drops():
     assert event.data.startswith("x")
     assert event.dropped_chunks == 1
     assert event.dropped_bytes == 32
+
+
+def test_worker_pty_broker_start_failure_cleans_pipe_reader_and_pipe_pane():
+    from delamain_backend.workers.manager import WorkerPipeReader, WorkerPtyBroker
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.terminated = False
+            self.killed = False
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        async def wait(self):
+            return self.returncode
+
+    class FakeManager:
+        def __init__(self):
+            self.process = FakeProcess()
+            self.cleanup_called = False
+            self.disable_calls: list[tuple[str, str, str | None]] = []
+            self.removed = False
+
+        async def _create_pipe_reader(self, row):
+            async def cleanup():
+                self.cleanup_called = True
+
+            return WorkerPipeReader(
+                process=self.process,
+                pipe_command="cat >> /tmp/delamain-pty-test",
+                cleanup=cleanup,
+            )
+
+        async def _enable_pipe_pane(self, session_name, host, command, *, tmux_socket=None):
+            raise ValueError("pipe-pane enable failed")
+
+        async def _disable_pipe_pane(self, session_name, host, *, tmux_socket=None):
+            self.disable_calls.append((session_name, host, tmux_socket))
+
+        async def _remove_pty_broker(self, worker_id, broker):
+            self.removed = True
+
+    row = {
+        "id": "worker_pipe_fail",
+        "tmux_session": "dw-worker_pipe_fail",
+        "host": "serrano",
+        "tmux_socket": "/tmp/test-workers.sock",
+    }
+    manager = FakeManager()
+    broker = WorkerPtyBroker(manager, row["id"], row)
+
+    with pytest.raises(ValueError, match="pipe-pane enable failed"):
+        _event_loop().run_until_complete(broker.start())
+
+    assert broker.closed is True
+    assert manager.disable_calls == [
+        ("dw-worker_pipe_fail", "serrano", "/tmp/test-workers.sock")
+    ]
+    assert manager.process.terminated is True
+    assert manager.process.killed is False
+    assert manager.cleanup_called is True
+    assert manager.removed is True
 
 
 def test_worker_terminal_input_surfaces_winpc_ssh_failure(

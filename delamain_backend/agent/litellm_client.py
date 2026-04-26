@@ -139,8 +139,10 @@ def _run_litellm_process_sync(
         process.terminate()
         process.join(5)
         raise ModelCallError(f"Model route timed out after {timeout_seconds}s: {model_route}")
-    if queue.empty():
-        raise ModelCallError(f"Model route exited without a response: {model_route}")
+    return _read_litellm_process_result(queue, model_route)
+
+
+def _read_litellm_process_result(queue: Any, model_route: str) -> Any:
     try:
         status, payload = queue.get(timeout=5)
     except queue_module.Empty as exc:

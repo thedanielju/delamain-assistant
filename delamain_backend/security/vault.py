@@ -86,9 +86,7 @@ def load_vault_graph(
         node = apply_generated_metadata(node, generated_metadata)
         node = apply_staleness_metadata(node, conflict_paths)
         relative_path = _allowed_graph_path(config, policy, node, sensitive_unlocked=sensitive_unlocked)
-        if relative_path is None:
-            continue
-        if node["source_type"] == "vault_note" and _is_ignored_relative_path(config, relative_path):
+        if _graph_policy_omission_reason(config, node, relative_path) is not None:
             continue
         if folder and not relative_path.startswith(folder.rstrip("/") + "/"):
             continue
@@ -711,7 +709,13 @@ def _graph_policy_omission_reason(
 
 def _policy_omission(node: dict[str, Any], reason: str) -> dict[str, Any]:
     raw_path = str(node.get("path") or node.get("id"))
-    redacted = reason in {"path_policy", "sensitive_locked"} or _looks_secret_like(raw_path)
+    redacted = reason in {
+        "path_policy",
+        "sensitive_locked",
+        "ignored",
+        "excluded",
+        "blocked",
+    } or _looks_secret_like(raw_path)
     return {
         "id": None if redacted else str(node.get("id") or node.get("path")),
         "path": None if redacted else raw_path,
@@ -767,8 +771,17 @@ def _generated_relation_edges(
     nodes_by_id: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     by_path = {str(node.get("path")): node_id for node_id, node in nodes_by_id.items()}
+    source_sha_by_path = {
+        str(node.get("path")): str(node.get("sha256"))
+        for node in nodes_by_id.values()
+        if node.get("path") and node.get("sha256")
+    }
     edges: list[dict[str, Any]] = []
-    for candidate in generated_relation_candidates(metadata):
+    for candidate in generated_relation_candidates(
+        metadata,
+        allowed_paths=set(by_path),
+        source_sha_by_path=source_sha_by_path,
+    ):
         decision = str(candidate.get("decision") or "candidate")
         if decision == "rejected":
             continue

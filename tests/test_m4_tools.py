@@ -371,6 +371,13 @@ def test_cancel_waiting_approval_resolves_permission_and_stays_cancelled(m4_conf
         "SELECT payload FROM events WHERE run_id = ? AND type = 'permission.resolved' ORDER BY id DESC LIMIT 1",
         (run_id,),
     ).fetchone()
+    event_types = [
+        row[0]
+        for row in con.execute(
+            "SELECT type FROM events WHERE run_id = ? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+    ]
     tool_call = con.execute(
         "SELECT status, error_message FROM tool_calls WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
         (run_id,),
@@ -378,6 +385,7 @@ def test_cancel_waiting_approval_resolves_permission_and_stays_cancelled(m4_conf
     con.close()
 
     assert json.loads(permission_event[0])["resolver"] == "system"
+    assert event_types[-1] == "run.completed"
     assert tool_call[0] == "cancelled"
     assert "awaiting approval" in tool_call[1]
 

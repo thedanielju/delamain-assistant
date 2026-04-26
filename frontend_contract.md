@@ -7,7 +7,7 @@ aliases:
 
 # DELAMAIN Frontend Contract
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 This document defines the complete backend API contract for a Phase 2 frontend implementation. The canonical backend runs on `serrano` at `http://127.0.0.1:8420/api`. Deployed frontends should call same-origin `/api/...` and should not depend on whether the current upstream hop is nginx, a Next.js rewrite, or direct localhost development. All responses are JSON unless otherwise noted.
 
@@ -256,6 +256,7 @@ Request body:
 | `context_mode` | string or null | null | Override context mode for this run |
 | `model_route` | string or null | null | Override model route for this run |
 | `incognito_route` | boolean or null | null | Override incognito for this run |
+| `selected_context_paths` | string[] or null | null | Explicit composer-tray vault/workspace context paths to include for this run |
 
 Response (returns immediately, run executes in background):
 
@@ -270,10 +271,12 @@ Response (returns immediately, run executes in background):
 Frontend flow:
 1. POST the prompt, receive `run_id`.
 2. Connect to SSE stream to follow the run.
-3. Run progresses through `queued` -> `running` -> `completed`/`failed`.
+3. Run progresses through `queued` -> `running` -> `completed`/`failed`/`cancelled`.
 4. Messages and events accumulate during the run.
 
 Ordering guarantee: the backend persists the user message and run before returning this response, emits `run.queued` after the transaction, and then enqueues background processing. A very fast run may emit `run.started`/deltas before the browser finishes opening SSE; clients should rely on SSE replay with `Last-Event-ID` or fetch REST history after reconnect.
+
+Only explicit selected/pinned composer-tray items should be sent in `selected_context_paths`. Draft preview suggestions are advisory until the user pins/selects them.
 
 ### MessageOut Shape
 
@@ -305,6 +308,8 @@ Returns a single run.
 ### POST /api/runs/{run_id}/cancel
 
 Cancel a running run.
+
+Cancellation emits any necessary permission/tool cleanup before the terminal `run.completed` event with `status: "cancelled"`. The frontend should treat that terminal event as final for the run and ignore any stale late-arriving non-terminal UI state.
 
 ### POST /api/runs/{run_id}/retry
 
@@ -895,7 +900,7 @@ Generated relation feedback request:
 }
 ```
 
-`decision` is `accepted` or `rejected`. Accepted relations appear as `accepted_generated` graph edges. Rejected relations are remembered and suppressed.
+`decision` is `accepted` or `rejected`. Accepted relations appear as `accepted_generated` graph edges. Rejected relations are remembered and suppressed. Generated relations are exposed only when both endpoints are present in the current policy-allowed graph and the source generated metadata still matches the indexed node `sha256`.
 
 Graph nodes may also include advisory G5 fields:
 
@@ -1346,6 +1351,13 @@ Returns the updated file metadata (same shape as GET).
 
 Returns available worker types.
 
+Query params:
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `include_readiness` | boolean | false | Include cached launch/auth readiness checks |
+| `refresh_readiness` | boolean | false | Force a fresh readiness probe instead of using the TTL cache |
+
 Response:
 
 ```json
@@ -1435,6 +1447,8 @@ Query params:
 |---|---|---|
 | `status` | string or null | Filter by status |
 | `conversation_id` | string or null | Filter by conversation |
+| `include_readiness` | boolean | Include cached launch/auth readiness checks |
+| `refresh_readiness` | boolean | Force a fresh readiness probe |
 
 Response:
 
@@ -1460,7 +1474,7 @@ Response: `WorkerOut`
 
 ### GET /api/workers/{worker_id}
 
-Get worker details. Add `?refresh=true` to check tmux liveness and update status if the session has died.
+Get worker details. Add `?refresh=true` to check tmux liveness and update status if the session has died. Add `include_readiness=true` and optionally `refresh_readiness=true` to include launch/auth readiness metadata.
 
 Response: `WorkerOut`
 
@@ -1526,6 +1540,7 @@ Server-to-client text frames are JSON:
 ```json
 { "type": "snapshot", "data": "initial pane text..." }
 { "type": "data", "data": "new pane text..." }
+{ "type": "data", "data": "new pane text...", "dropped_chunks": 2, "dropped_bytes": 4096 }
 { "type": "error", "message": "Worker is not running (status=stopped)" }
 ```
 

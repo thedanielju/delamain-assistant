@@ -167,13 +167,15 @@ function vaultItemFromPath(path: string, pinned = true): VaultContextItem {
 }
 
 function normalizeVaultContextItems(
-  response: VaultPinsResponse | VaultContextPreview | null | undefined
+  response: VaultPinsResponse | VaultContextPreview | null | undefined,
+  options: { defaultPinned?: boolean } = {}
 ): VaultContextItem[] {
   if (!response) return []
+  const defaultPinned = options.defaultPinned ?? true
   const rawItems = response.items ?? ('pins' in response ? response.pins : undefined)
   if (rawItems?.length) {
     return rawItems.flatMap((item) => {
-      if (typeof item === 'string') return [vaultItemFromPath(item)]
+      if (typeof item === 'string') return [vaultItemFromPath(item, defaultPinned)]
       if (!item || typeof item !== 'object' || !item.path) return []
       return [{
         id: item.id ?? item.path,
@@ -191,13 +193,13 @@ function normalizeVaultContextItems(
         tags: item.tags,
         source_type: item.source_type,
         category: item.category,
-        pinned: item.pinned ?? true,
+        pinned: item.pinned ?? defaultPinned,
         excluded: item.excluded,
         exclusionReason: item.exclusionReason,
       }]
     })
   }
-  return (response.paths ?? []).map((path) => vaultItemFromPath(path))
+  return (response.paths ?? []).map((path) => vaultItemFromPath(path, defaultPinned))
 }
 
 function vaultContextItemFromNote(note: VaultNoteDetail): VaultContextItem {
@@ -793,12 +795,9 @@ export function useDelamainBackend() {
     resumeKey: activeConversationId || null,
   })
 
-  // ── Lazy message fetch on conversation switch ───────────────────────────────
-  const loadedConvosRef = useRef<Set<string>>(new Set())
+  // ── Message fetch on conversation switch ───────────────────────────────────
   useEffect(() => {
     if (!connected || !activeConversationId) return
-    if (loadedConvosRef.current.has(activeConversationId)) return
-    loadedConvosRef.current.add(activeConversationId)
     let cancelled = false
     Promise.all([
       api.listMessages(activeConversationId),
@@ -856,7 +855,7 @@ export function useDelamainBackend() {
       try {
         const pins = await api.listConversationContextPins(conversationId)
         if (activeConversationIdRef.current !== conversationId) return
-        const pinItems = normalizeVaultContextItems(pins)
+        const pinItems = normalizeVaultContextItems(pins, { defaultPinned: true })
         if (!pinItems.length) {
           setState((s) => ({ ...s, vaultContextItems: [] }))
           return
@@ -870,7 +869,9 @@ export function useDelamainBackend() {
           if (activeConversationIdRef.current !== conversationId) return
           setState((s) => ({
             ...s,
-            vaultContextItems: previewItems.length ? previewItems : pinItems,
+            vaultContextItems: previewItems.length
+              ? previewItems.map((item) => ({ ...item, pinned: true }))
+              : pinItems,
           }))
         } catch {
           if (activeConversationIdRef.current !== conversationId) return
@@ -916,7 +917,7 @@ export function useDelamainBackend() {
         return {
           contextMode: nextContext,
           blankSlate: nextContext === 'Blank-slate',
-          model: selected?.modelRoute ?? s.model,
+          model: selected?.modelRoute ?? s.defaultModel,
           incognito: selected?.incognitoRoute ?? s.incognito,
           sensitiveUnlocked: nextSensitive,
           sensitive: nextSensitive,
@@ -964,7 +965,7 @@ export function useDelamainBackend() {
         leftSidebarOpen: false,
         contextMode: uiConv.contextMode ?? s.contextMode,
         blankSlate: (uiConv.contextMode ?? s.contextMode) === 'Blank-slate',
-        model: uiConv.modelRoute ?? s.model,
+        model: uiConv.modelRoute ?? s.defaultModel,
         incognito: uiConv.incognitoRoute ?? s.incognito,
         sensitiveUnlocked: uiConv.sensitiveUnlocked ?? false,
         sensitive: uiConv.sensitiveUnlocked ?? false,
@@ -1003,7 +1004,7 @@ export function useDelamainBackend() {
           model_route: state.model,
           incognito_route: state.incognito,
           selected_context_paths: (state.vaultContextItems ?? [])
-            .filter((item) => !item.excluded)
+            .filter((item) => item.pinned && !item.excluded)
             .map((item) => item.path),
         })
         setState((s) => ({
@@ -1040,14 +1041,25 @@ export function useDelamainBackend() {
       if (!connected || !activeConversationId) return
       const trimmed = content.trim()
       if (trimmed.length < 3) {
-        setState((s) => ({ ...s, vaultContextItems: [] }))
+        setState((s) => ({
+          ...s,
+          vaultContextItems: (s.vaultContextItems ?? []).filter((item) => item.pinned),
+        }))
         return
       }
       try {
         const preview = await api.previewVaultContext(trimmed)
         if (activeConversationIdRef.current !== activeConversationId) return
-        const previewItems = normalizeVaultContextItems(preview)
-        setState((s) => ({ ...s, vaultContextItems: previewItems }))
+        const previewItems = normalizeVaultContextItems(preview, { defaultPinned: false })
+        setState((s) => {
+          const pinnedItems = (s.vaultContextItems ?? []).filter((item) => item.pinned)
+          const byPath = new Map<string, VaultContextItem>()
+          for (const item of pinnedItems) byPath.set(item.path, item)
+          for (const item of previewItems) {
+            if (!byPath.has(item.path)) byPath.set(item.path, item)
+          }
+          return { ...s, vaultContextItems: Array.from(byPath.values()) }
+        })
       } catch (err) {
         handleBackendError(err)
       }
