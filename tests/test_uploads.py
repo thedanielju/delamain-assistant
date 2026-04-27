@@ -49,6 +49,7 @@ def test_text_upload_lifecycle(test_config):
         assert upload["original_filename"] == "notes.txt"
         assert upload["extension"] == ".txt"
         assert upload["conversion_status"] == "fresh"
+        assert upload["conversion_converter"] == "direct_text"
         assert "storage_path" not in upload
         assert "extracted_path" not in upload
         assert "converted_path" not in upload
@@ -61,6 +62,7 @@ def test_text_upload_lifecycle(test_config):
         listed = client.get("/api/uploads")
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()["uploads"]] == [upload["id"]]
+        assert listed.json()["uploads"][0]["conversion_converter"] == "direct_text"
 
         preview = client.get(f"/api/uploads/{upload['id']}/preview?limit=8")
         assert preview.status_code == 200

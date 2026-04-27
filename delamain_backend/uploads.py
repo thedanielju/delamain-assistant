@@ -245,7 +245,7 @@ def upload_row_out(row: dict[str, Any]) -> dict[str, Any]:
         "sha256": row.get("sha256"),
         "conversion_status": conversion_status,
         "conversion_error": row.get("conversion_error"),
-        "conversion_converter": row.get("conversion_converter"),
+        "conversion_converter": row.get("converter"),
         "promoted_category": promoted_category,
         "promoted_bundle_id": promoted_bundle_id,
         "promoted_at": row.get("promoted_at"),
