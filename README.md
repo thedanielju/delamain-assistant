@@ -69,7 +69,7 @@ This repository includes:
 
 ## Current Status
 
-As of 2026-04-26:
+As of 2026-04-27:
 
 - the backend foundation is broadly implemented, tested, and production-verified
 - the active project phase is frontend UI/UX iteration, accessibility, and operational polish
@@ -120,6 +120,8 @@ Current user-visible model selection surfaces are:
   - persisted backend setting used for new runs unless overridden
 - task model
   - persisted backend setting used for worker summaries, vault enrichment, and similar background tasks
+- slash commands
+  - frontend-owned shortcuts for `/model`, `/model <route-or-alias>`, `/escalate model|paid [route]`, `/escalate worker`, `/worker <type> [name]`, and `/monitor <worker id-or-name>`
 
 ## Architecture
 
@@ -138,6 +140,7 @@ The backend is a FastAPI app with:
 - permission request and resolve flows
 - usage, subscription, and Syncthing reporting
 - worker session lifecycle management
+- upload intake with backend-local temporary storage, original-file preservation, extraction fallback, and workspace promotion
 
 ### Frontend
 
@@ -150,6 +153,7 @@ The frontend is a Next.js application that provides:
 - settings and model route controls
 - health, usage, Syncthing, and workers panels
 - direct action shortcuts
+- immediate browser upload/attachment controls and an Uploads intake panel
 - context editing for the supported context files
 
 ### Storage and Runtime Data
@@ -164,6 +168,8 @@ Important runtime locations:
   - `/home/danielju/.local/share/delamain/action-outputs/`
 - context backups:
   - `/home/danielju/.local/share/delamain/context-backups/`
+- upload intake originals and conversion cache:
+  - `/home/danielju/.local/share/delamain/uploads/`
 
 ### Machines
 
@@ -202,6 +208,14 @@ least two backend keepalive intervals without proxy buffering or premature close
 - editable `system-context`
 - editable `short-term-continuity`
 - backend-enforced path policy for vault and workspace access
+
+### Upload Intake
+
+- browser uploads go first to backend-local temporary storage outside the vault, Sensitive vault, and Syncthing-backed `llm-workspace`
+- uploads are attached to prompts only by explicit per-run attachment references
+- `rich` attachments send the preserved original through LiteLLM as a provider-native file part when the active route supports it, with extracted-text fallback
+- `converted` attachments send only bounded extracted/converted text
+- promotion copies the original into `llm-workspace/reference` or `llm-workspace/syllabi`, creates or refreshes a `delamain_ref` bundle, and rebuilds the vault index
 
 ### Sensitive Access
 

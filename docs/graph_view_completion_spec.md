@@ -115,7 +115,7 @@ These rules are not optional.
 
 - Sensitive remains locked by default.
 - Sensitive content is not included in graph, context capsules, summaries, generated tags, or maintenance proposals unless explicitly unlocked through conversation controls.
-- Raw workspace source documents are not prompt payloads. Use converted `document.md`.
+- Raw workspace source documents are not prompt payloads for vault/workspace graph context. Use converted `document.md` there; upload intake rich attachments are a separate explicit per-run lane.
 - Ignore rules are applied before content reads.
 - The frontend is not a security boundary.
 - The model does not decide what gets indexed.
@@ -303,7 +303,7 @@ User-facing exclusion paths:
 - policy exclusions editor, future
 - direct action, future
 
-Do not rely on frontmatter as the only exclusion mechanism. It requires reading the note body, which defeats the point for content that should not be read.
+Do not rely on frontmatter as the only exclusion mechanism. `sensitivity` frontmatter is scanned locally from bounded leading bytes before body reads, but path/glob policy remains the earlier coarse exclusion layer and can only escalate privacy.
 
 ## Context Preview Flow
 

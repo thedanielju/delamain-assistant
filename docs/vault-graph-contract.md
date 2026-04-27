@@ -1,6 +1,6 @@
 # Vault Graph Contract
 
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 
 This document defines the contract for DELAMAIN's unified graph and context-capsule slice. V1 is intentionally conservative: structural index, workspace document ingestion, policy enforcement, and reversible exact maintenance actions first; AI enrichment and broader maintenance actions later.
 

@@ -15,4 +15,13 @@ test('chat shell opens the vault panel and composer stays usable', async ({ page
   await expect(maintenanceTab).toBeVisible()
   await maintenanceTab.click()
   await expect(page.getByText(/Vault endpoints unavailable|new structured folder/i)).toBeVisible()
+
+  await page.getByLabel('Uploads panel').click()
+  await expect(page.getByText('Uploads')).toBeVisible()
+  await expect(page.getByText(/pending|No uploads in intake|Failed to load uploads/i)).toBeVisible()
+
+  const modelRoute = page.getByLabel('Active model route')
+  await expect(modelRoute).toBeVisible()
+  await messageInput.fill('/model')
+  await expect(messageInput).toHaveValue('/model')
 })

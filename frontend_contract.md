@@ -7,7 +7,7 @@ aliases:
 
 # DELAMAIN Frontend Contract
 
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 
 This document defines the complete backend API contract for a Phase 2 frontend implementation. The canonical backend runs on `serrano` at `http://127.0.0.1:8420/api`. Deployed frontends should call same-origin `/api/...` and should not depend on whether the current upstream hop is nginx, a Next.js rewrite, or direct localhost development. All responses are JSON unless otherwise noted.
 
@@ -284,7 +284,7 @@ Uploaded attachments are also explicit run context. The browser uploads files im
 ```json
 {
   "attachments": [
-    { "upload_id": "upl_...", "include": true, "representation": "converted" }
+    { "upload_id": "upl_...", "include": true, "representation": "rich" }
   ]
 }
 ```
@@ -867,7 +867,7 @@ Response:
 }
 ```
 
-Preview items are advisory until pinned/selected by the user. Prompt submission uses `selected_context_paths`, not draft preview suggestions. Workspace document context resolves from converted `document.md`; raw rich documents are never prompt payloads.
+Preview items are advisory until pinned/selected by the user. Prompt submission uses `selected_context_paths`, not draft preview suggestions. Workspace document context resolves from converted `document.md`; raw rich workspace source documents are never vault-context prompt payloads. Upload intake attachments are a separate explicit run-context lane where `rich` mode may send provider-native file parts.
 
 Fresh generated tags and note types may influence deterministic preview reasons such as `generated_tag_match` and `note_type_match`. Fresh generated summaries may be used as the payload for oversized selected notes. Stale generated summaries are labeled stale and should not be trusted as payloads.
 
