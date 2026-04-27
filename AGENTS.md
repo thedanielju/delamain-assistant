@@ -20,7 +20,7 @@ Treat this repo as a high-context system where small changes can create subtle d
 - Production frontend origin on `serrano`: `127.0.0.1:3000`
 - Production backend origin on `serrano`: `127.0.0.1:8420`
 - Public traffic must not depend on the dev-local sidecar at `127.0.0.1:8421`
-- `chat.danielju.com` has been deleted and must not be used
+- `chat.danielju.com` is stale/unsupported and must not be used
 
 ## Project Overview
 Major backend subsystems:
@@ -70,9 +70,11 @@ Obsidian project docs:
 - worker/tmux/SSH coordination remains correct across `serrano` and `winpc`
 - model routing, budget thresholds, and fallback semantics remain intentional
 - production public ingress remains `term.danielju.com` with Cloudflare Access enforced
-- Obsidian `sensitivity` frontmatter remains a deterministic local privacy gate: `private` is never indexed/exposed, and `sensitive` is excluded while Sensitive is locked
+- Obsidian `sensitivity` frontmatter remains a deterministic local privacy gate: `private` is never indexed/exposed, and `sensitive` is omitted by the default/current index path while Sensitive is locked
 - Vault indexing must decide `sensitivity` from bounded frontmatter pre-scan before any body read; frontmatter is never sent to a model
 - Upload intake storage must stay outside the vault, Sensitive vault, and Syncthing-backed `llm-workspace`; uploads only enter the graph after explicit promotion
+- Prompt attachments must be explicit per run. Native rich upload passthrough may send original file parts through LiteLLM when supported, but must keep extracted/converted fallback behavior.
+- Model route selection and frontend-owned slash commands are user-visible contract surfaces; keep route aliases and backend route metadata aligned.
 
 ## Working Rules
 - Before editing, state intended scope and likely files touched.
@@ -97,13 +99,15 @@ Obsidian project docs:
 - If deployment must be manual, keep backend repo sync, frontend service sync, helper wrapper install, vault-index rebuild, frontend build, and backend/frontend restarts as distinct steps.
 
 ## Current Development Posture
-- The backend foundation is broadly implemented and production-verified; default new work should bias toward frontend UI/UX iteration, accessibility, and operational polish.
+- The backend foundation is stable after review/stabilization and production deployment; default new work should bias toward frontend UI/UX iteration, accessibility, and operational polish.
 - Backend changes are still allowed when needed, but treat them as focused contract accommodations, bug fixes, or policy-safe extensions rather than broad backend construction.
+- Frontend UI/UX iteration should use real backend data by default. Use mock data only for isolated visual edge states that are hard or unsafe to reproduce.
+- Preserve DELAMAIN's dense dark operational UI: keep backend state visible when useful, maintain accessibility and mobile awareness, and avoid marketing, landing-page, or decorative product-site patterns.
 - Keep `AGENTS.md` stable. Put volatile details such as commit IDs, PIDs, deployment transcripts, one-off prompt names, and live verification timelines in `docs/DELAMAIN_AGENT_STATE.md`.
 
 ## Tooling And Plugins Guidance
 - Prefer Browser Use for in-app browser inspection, screenshots, interaction checks, and UI QA.
-- Prefer `webapp-testing` for repeatable Playwright regression work or scripted local browser smoke tests.
+- Prefer `webapp-testing`, Playwright, or `pnpm browser:smoke` for repeatable frontend regression work and scripted browser smoke tests.
 - Use the GitHub plugin only for GitHub repository, PR, issue, or CI workflows.
 - Use Cloudflare tooling only for Cloudflare configuration, Access/Tunnel, Workers, or platform API work.
 - Use Sentry/DataDog skills only when those systems are configured or logs/issues are explicitly requested.
