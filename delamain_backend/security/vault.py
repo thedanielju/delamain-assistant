@@ -86,7 +86,7 @@ def load_vault_graph(
         node = apply_generated_metadata(node, generated_metadata)
         node = apply_staleness_metadata(node, conflict_paths)
         relative_path = _allowed_graph_path(config, policy, node, sensitive_unlocked=sensitive_unlocked)
-        if _graph_policy_omission_reason(config, node, relative_path) is not None:
+        if _graph_policy_omission_reason(config, node, relative_path, sensitive_unlocked=sensitive_unlocked) is not None:
             continue
         if folder and not relative_path.startswith(folder.rstrip("/") + "/"):
             continue
@@ -604,11 +604,17 @@ def _load_filtered_graph_index(
         node = apply_staleness_metadata(node, conflict_paths)
         node["id"] = str(node.get("id") or node["path"])
         relative_path = _allowed_graph_path(config, policy, node, sensitive_unlocked=sensitive_unlocked)
-        omission_reason = _graph_policy_omission_reason(config, node, relative_path)
+        omission_reason = _graph_policy_omission_reason(
+            config,
+            node,
+            relative_path,
+            sensitive_unlocked=sensitive_unlocked,
+        )
         if omission_reason is not None:
-            omitted_nodes[node["id"]] = _policy_omission(node, omission_reason)
-            for alias in _node_lookup_aliases(node):
-                aliases[alias] = node["id"]
+            if not _silent_policy_omission(omission_reason):
+                omitted_nodes[node["id"]] = _policy_omission(node, omission_reason)
+                for alias in _node_lookup_aliases(node):
+                    aliases[alias] = node["id"]
             continue
         node["path"] = str(relative_path)
         nodes[node["id"]] = node
@@ -687,7 +693,12 @@ def _graph_policy_omission_reason(
     config: AppConfig,
     node: dict[str, Any],
     relative_path: str | None,
+    *,
+    sensitive_unlocked: bool,
 ) -> str | None:
+    privacy_reason = _graph_privacy_omission_reason(node, sensitive_unlocked=sensitive_unlocked)
+    if privacy_reason is not None:
+        return privacy_reason
     if relative_path is None:
         source_type = str(node.get("source_type") or "vault_note")
         raw_path = str(node.get("path") or "")
@@ -707,6 +718,24 @@ def _graph_policy_omission_reason(
     return None
 
 
+def _graph_privacy_omission_reason(
+    node: dict[str, Any],
+    *,
+    sensitive_unlocked: bool,
+) -> str | None:
+    policy_state = str(node.get("policy_state") or "allowed").strip().lower()
+    sensitivity = str(node.get("sensitivity") or "normal").strip().lower()
+    if policy_state == "private" or sensitivity == "private":
+        return "private"
+    if policy_state in {"sensitive", "sensitive_locked"} or sensitivity == "sensitive":
+        return None if sensitive_unlocked else "sensitive_locked"
+    return None
+
+
+def _silent_policy_omission(reason: str) -> bool:
+    return reason in {"private", "sensitive_locked"}
+
+
 def _policy_omission(node: dict[str, Any], reason: str) -> dict[str, Any]:
     raw_path = str(node.get("path") or node.get("id"))
     redacted = reason in {
@@ -715,6 +744,7 @@ def _policy_omission(node: dict[str, Any], reason: str) -> dict[str, Any]:
         "ignored",
         "excluded",
         "blocked",
+        "private",
     } or _looks_secret_like(raw_path)
     return {
         "id": None if redacted else str(node.get("id") or node.get("path")),
@@ -862,6 +892,7 @@ def _normalize_node(raw_node: Any) -> dict[str, Any] | None:
         "dangling_link_count": raw_node.get("dangling_link_count") if isinstance(raw_node.get("dangling_link_count"), int) else 0,
         "archive_state": _string_or_none(raw_node.get("archive_state")),
         "policy_state": _string_or_none(raw_node.get("policy_state")) or "allowed",
+        "sensitivity": _string_or_none(raw_node.get("sensitivity")) or "normal",
         "warnings": _string_list(raw_node.get("warnings")),
     }
 
@@ -1048,6 +1079,8 @@ def _policy_hash(config: AppConfig) -> str:
 
 
 def _is_context_payload_blocked(node: dict[str, Any]) -> bool:
+    if _graph_privacy_omission_reason(node, sensitive_unlocked=False) is not None:
+        return True
     source_type = str(node.get("source_type") or "vault_note")
     status = str(node.get("status") or "fresh")
     if source_type.startswith("workspace_") and status in {"failed", "needs_ocr", "needs_reprocess"}:

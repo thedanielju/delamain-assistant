@@ -643,6 +643,9 @@ Core policy:
 - V1 graph is a Cytoscape 2D work graph; 3D Atlas is separate future work.
 - Vault maintenance is queued and reversible; no hard delete in V1.
 - Syncthing status may inform UX through sanitized APIs only.
+- Obsidian frontmatter `sensitivity` is read locally by the index helper using a bounded leading-byte pre-scan before any body parsing. It is never sent to a model.
+- `sensitivity: normal` or missing uses normal indexing behavior; `sensitivity: sensitive` is excluded while Sensitive is locked; `sensitivity: private` is never exposed in graph, context, enrichment, generated relations, maintenance, omissions, backlinks, or dangling-link surfaces.
+- Path policy, Sensitive vault roots, `.modelignore`, `.delamainignore`, and `vault_policy.md` remain authoritative. Frontmatter cannot downgrade those restrictions.
 
 ### GET /api/vault/graph
 
@@ -679,7 +682,9 @@ Response:
       "summary_status": "fresh",
       "generated_metadata_state": "fresh",
       "staleness_status": "fresh",
-      "sync_status": "ok"
+      "sync_status": "ok",
+      "sensitivity": "normal",
+      "policy_state": "allowed"
     },
     {
       "id": "reference:api-docs",
@@ -715,9 +720,11 @@ Response:
 
 Edge kinds: `wikilink`, `markdown_link`, `backlink`, `tag`, `property`, `generated_candidate`, `accepted_generated`, `rejected_generated`.
 
+The backend filters graph nodes defensively by `sensitivity` and `policy_state` before returning nodes or edges. If a stale `graph.json` contains a `private` node, it is silently excluded even when Sensitive is unlocked. If it contains a `sensitive` node, it is excluded unless the existing explicit Sensitive unlock path allows that surface. Links from visible notes to private or locked-sensitive notes must not appear as graph edges, backlinks, dangling links, generated relations, or policy omission details.
+
 ### GET /api/vault/note
 
-Returns a bounded preview for an index-known, policy-allowed note.
+Returns a bounded preview for an index-known, policy-allowed note. `private` notes and locked `sensitive` notes are treated as unavailable even if a stale index contains them.
 
 Query parameters:
 
@@ -786,6 +793,8 @@ Preview items are advisory until pinned/selected by the user. Prompt submission 
 
 Fresh generated tags and note types may influence deterministic preview reasons such as `generated_tag_match` and `note_type_match`. Fresh generated summaries may be used as the payload for oversized selected notes. Stale generated summaries are labeled stale and should not be trusted as payloads.
 
+Context preview and selected context resolution use only currently policy-allowed graph nodes. They must not surface `private` metadata or locked `sensitive` metadata through titles, paths, aliases, tags, reasons, omission records, or failed context payloads.
+
 ### Vault AI Enrichment
 
 ```text
@@ -820,7 +829,7 @@ POST   /api/vault/enrichment/relations/feedback
 }
 ```
 
-The endpoint runs a bounded task-model pass over policy-allowed indexed notes/documents, writes sidecar metadata to `llm-workspace/vault-index/generated/metadata.json`, and may create `generated_tag_suggestion` maintenance proposals. It does not block prompt sends and does not write source notes directly.
+The endpoint runs a bounded task-model pass over policy-allowed indexed notes/documents, writes sidecar metadata to `llm-workspace/vault-index/generated/metadata.json`, and may create `generated_tag_suggestion` maintenance proposals. It excludes `private` and locked `sensitive` notes before body reads or model calls. It does not block prompt sends and does not write source notes directly.
 
 `GET /api/vault/enrichment/batch` returns:
 
@@ -868,7 +877,7 @@ Generated relation feedback request:
 }
 ```
 
-`decision` is `accepted` or `rejected`. Accepted relations appear as `accepted_generated` graph edges. Rejected relations are remembered and suppressed. Generated relations are exposed only when both endpoints are present in the current policy-allowed graph and the source generated metadata still matches the indexed node `sha256`.
+`decision` is `accepted` or `rejected`. Accepted relations appear as `accepted_generated` graph edges. Rejected relations are remembered and suppressed. Generated relations are exposed only when both endpoints are present in the current policy-allowed graph, neither endpoint is `private` or locked `sensitive`, and the source generated metadata still matches the indexed node `sha256`.
 
 Graph nodes may also include advisory G5 fields:
 
@@ -943,6 +952,7 @@ Exact replacement gates:
 - one change per proposal in V1
 - target must be an indexed `vault_note`
 - target must pass write path policy with Sensitive locked
+- target must not be `private` or locked `sensitive`
 - target must not be in sanitized Syncthing conflict reports
 - `old_text` must occur exactly once
 - `expected_sha256`, when present, must match current bytes
@@ -978,6 +988,8 @@ delamain-vault-index init-folder --kind project --name "..." --json
 delamain-vault-index init-folder --kind course --name "..." --json
 delamain-vault-index init-folder --kind reference --name "..." --json
 ```
+
+The helper implementation is source-controlled in `delamain_ref/`. Runtime `llm-workspace/bin/delamain-ref` and `llm-workspace/bin/delamain-vault-index` are thin wrappers, installed from `scripts/helper_wrappers/`, that import the deployed repo package. Updating helper behavior requires deploying the repo package and wrapper, then rebuilding the vault index.
 
 Backend heartbeat runs the helper every 5 minutes after a 90-second inactivity window when source changes are detected. Status is written to `llm-workspace/vault-index/_heartbeat.json`.
 

@@ -57,7 +57,14 @@ This repository includes:
 3. `tests/`
    - backend regression and contract tests
 
-4. `frontend_contract.md`
+4. `delamain_ref/`
+   - repo-owned deterministic reference ingestion and vault indexing helper package
+   - runtime commands in `llm-workspace/bin` should be thin wrappers around this package
+
+5. `scripts/helper_wrappers/`
+   - thin `delamain-ref` and `delamain-vault-index` wrappers suitable for installation into `llm-workspace/bin`
+
+6. `frontend_contract.md`
    - the repo-local copy of the current frontend/backend API contract
 
 ## Current Status

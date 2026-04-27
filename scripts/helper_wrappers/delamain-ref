@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ -n "${DELAMAIN_REF_PYTHON:-}" ]]; then
+  PYTHON="$DELAMAIN_REF_PYTHON"
+elif [[ -x "$HOME/.local/share/delamain/phase15-venv/bin/python" ]]; then
+  PYTHON="$HOME/.local/share/delamain/phase15-venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+else
+  PYTHON=python
+fi
+
+CANDIDATES=()
+if [[ -n "${DELAMAIN_REPO_ROOT:-}" ]]; then
+  CANDIDATES+=("$DELAMAIN_REPO_ROOT")
+fi
+CANDIDATES+=(
+  "$SCRIPT_DIR/../.."
+  "$SCRIPT_DIR/.."
+  "/home/danielju/delamain/backend"
+  "/Users/danielju/Desktop/delamain-assistant.nosync"
+)
+
+REPO_ROOT=""
+for candidate in "${CANDIDATES[@]}"; do
+  if [[ -d "$candidate/delamain_ref" ]]; then
+    REPO_ROOT="$(cd "$candidate" && pwd)"
+    break
+  fi
+done
+
+if [[ -z "$REPO_ROOT" ]]; then
+  echo "Unable to find DELAMAIN repo root containing delamain_ref." >&2
+  echo "Set DELAMAIN_REPO_ROOT to the repo checkout path." >&2
+  exit 127
+fi
+
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+GLOBAL_ARGS=()
+COMMAND_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace|--vault)
+      if [[ $# -lt 2 ]]; then
+        echo "$1 requires a value" >&2
+        exit 2
+      fi
+      GLOBAL_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    *)
+      COMMAND_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+exec "$PYTHON" -m delamain_ref.cli "${GLOBAL_ARGS[@]}" ref "${COMMAND_ARGS[@]}"

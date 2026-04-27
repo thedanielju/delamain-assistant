@@ -27,6 +27,13 @@ The local index may store structural metadata, generated metadata, and cached su
 
 Sensitive vault content remains locked by default and excluded from graph, context capsules, AI summary generation, generated tags, and maintenance proposals.
 
+Obsidian frontmatter `sensitivity` is a deterministic local privacy signal:
+- `normal` or missing: normal indexing behavior.
+- `sensitive`: excluded from graph, context, enrichment, and maintenance while Sensitive is locked. It may be considered only through the same explicit Sensitive-unlock model used elsewhere.
+- `private`: never included in graph, context, enrichment, generated relations, maintenance, omissions, or dangling-link surfaces.
+
+The index helper reads only bounded leading frontmatter bytes locally, parses YAML only when the file starts with `---`, and stops at the closing `---` or `...` within the scan cap. This frontmatter pre-scan is never sent to a model. Path policy, Sensitive vault paths, `.modelignore`, `.delamainignore`, and `vault_policy.md` remain authoritative and can only escalate privacy; frontmatter cannot downgrade those restrictions.
+
 ## Index Layers
 
 Structural index:
@@ -34,6 +41,7 @@ Structural index:
 - source type: `vault_note`, `workspace_syllabus`, or `workspace_reference`
 - sha256 and mtime
 - frontmatter keys
+- frontmatter `sensitivity` state after bounded local pre-scan
 - tags
 - headings
 - wikilinks, markdown links, backlinks
@@ -104,6 +112,8 @@ delamain-vault-index init-folder --kind course --name "..." --json
 delamain-vault-index init-folder --kind reference --name "..." --json
 ```
 
+The helper implementation is repo-owned under `delamain_ref/`. Runtime files under `llm-workspace/bin` should be thin wrappers copied from `scripts/helper_wrappers/` and should import the deployed repo package, not carry independent helper implementation code.
+
 `GET /api/vault/graph` returns bounded nodes and edges from the local index. It never returns full note bodies.
 
 `GET /api/vault/graph/neighborhood` returns a bounded N-hop expansion around one indexed graph node. It uses only the existing graph index, treats explicit graph edges as navigation links in either direction, and returns `center`, `nodes`, `edges`, `omitted`, and `policy_omissions`. It never reads note bodies.
@@ -137,7 +147,7 @@ The current graph endpoint supports bounded `folder`, `tag`, and `limit` filters
 Graph responses should include:
 - index status and generated timestamp
 - policy version/hash when available
-- nodes with ID, path, title, source type, tags, folder, archive state, summary availability, stale state
+- nodes with ID, path, title, source type, tags, folder, archive state, summary availability, stale state, and `sensitivity` when present
 - edges with `from`, `to`, `kind`, generated, and accepted state
 - generated ownership, duplicate, decision, question, and relation metadata when fresh
 - staleness score/reasons/status and sanitized sync status
@@ -149,6 +159,8 @@ Graph responses should not include:
 - raw workspace source documents such as PDFs/DOCX
 - raw Syncthing config
 - Sensitive content while locked
+- `sensitivity: private` notes, including their paths, titles, tags, aliases, backlinks, dangling-link targets, and policy omission entries
+- links from allowed notes to `private` or locked `sensitive` notes
 - ignored paths
 - secret-like filenames from policy globs
 
@@ -177,6 +189,8 @@ The frontend must show pinned/selected context in the context tray above the inp
 Workspace bundle context resolves from converted `document.md` only. Failed, `needs_ocr`, and `needs_reprocess` bundles may appear in graph/maintenance but are excluded from default context preview.
 
 Fresh generated tags and note types participate in deterministic context preview scoring. Fresh generated summaries can be used as the payload for oversized selected notes; stale summaries fall back to source snippets/headings instead of being trusted.
+
+Context preview, selected context resolution, enrichment, generated relation exposure, and maintenance proposals must treat `policy_state: private`, `sensitivity: private`, and locked `sensitivity: sensitive` as blocked even if a stale or hand-edited `graph.json` contains such nodes.
 
 ## Heartbeat And Folder Init
 

@@ -233,8 +233,11 @@ def _relation_filter_context(config: AppConfig) -> dict[str, Any]:
         if path is None:
             continue
         source_type = _string_or_none(raw_node.get("source_type")) or "vault_note"
-        policy_state = _string_or_none(raw_node.get("policy_state")) or "allowed"
-        if policy_state in {"ignored", "excluded", "blocked"}:
+        policy_state = (_string_or_none(raw_node.get("policy_state")) or "allowed").lower()
+        sensitivity = (_string_or_none(raw_node.get("sensitivity")) or "normal").lower()
+        if policy_state in {"ignored", "excluded", "blocked", "private", "sensitive", "sensitive_locked"}:
+            continue
+        if sensitivity in {"private", "sensitive"}:
             continue
         if not _relation_path_allowed(
             config,

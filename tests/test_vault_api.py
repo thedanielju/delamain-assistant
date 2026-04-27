@@ -185,6 +185,122 @@ def test_vault_note_requires_index_known_allowed_path(test_config):
         assert unindexed.status_code == 403
 
 
+def test_frontmatter_sensitivity_nodes_are_privacy_filtered_across_vault_surfaces(test_config):
+    visible = test_config.paths.vault / "Projects" / "DELAMAIN" / "visible.md"
+    private = test_config.paths.vault / "Projects" / "DELAMAIN" / "private.md"
+    sensitive = test_config.paths.vault / "Projects" / "DELAMAIN" / "sensitive.md"
+    visible.parent.mkdir(parents=True, exist_ok=True)
+    visible.write_text("# Visible Normal\n\nNormal graph note.\n", encoding="utf-8")
+    private.write_bytes(
+        b"---\n"
+        b"sensitivity: private\n"
+        b"---\n"
+        b"\xff\xfePRIVATE_BODY_UNIQUE_NEVER_READ\n"
+    )
+    sensitive.write_text(
+        "---\nsensitivity: sensitive\n---\n# Sensitive Title\n\nSensitive body.\n",
+        encoding="utf-8",
+    )
+    index = test_config.paths.llm_workspace / "vault-index"
+    index.mkdir(parents=True, exist_ok=True)
+    (index / "graph.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-04-25T00:00:00Z",
+                "nodes": [
+                    {
+                        "id": "Projects/DELAMAIN/visible.md",
+                        "path": "Projects/DELAMAIN/visible.md",
+                        "title": "Visible Normal",
+                        "tags": ["normal"],
+                        "bytes": visible.stat().st_size,
+                        "sensitivity": "normal",
+                    },
+                    {
+                        "id": "Projects/DELAMAIN/private.md",
+                        "path": "Projects/DELAMAIN/private.md",
+                        "title": "Private Unique Title",
+                        "tags": ["private-tag"],
+                        "aliases": ["Private Alias"],
+                        "bytes": private.stat().st_size,
+                        "sensitivity": "private",
+                    },
+                    {
+                        "id": "Projects/DELAMAIN/sensitive.md",
+                        "path": "Projects/DELAMAIN/sensitive.md",
+                        "title": "Sensitive Unique Title",
+                        "tags": ["sensitive-tag"],
+                        "bytes": sensitive.stat().st_size,
+                        "sensitivity": "sensitive",
+                    },
+                ],
+                "edges": [
+                    {
+                        "from": "Projects/DELAMAIN/visible.md",
+                        "to": "Projects/DELAMAIN/private.md",
+                        "kind": "wikilink",
+                    },
+                    {
+                        "from": "Projects/DELAMAIN/visible.md",
+                        "to": "Projects/DELAMAIN/sensitive.md",
+                        "kind": "wikilink",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (index / "backlinks.json").write_text(
+        json.dumps(
+            {
+                "Projects/DELAMAIN/private.md": ["Projects/DELAMAIN/visible.md"],
+                "Projects/DELAMAIN/sensitive.md": ["Projects/DELAMAIN/visible.md"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        graph = client.get("/api/vault/graph")
+        preview = client.post("/api/vault/context/preview", json={"prompt": "Private Sensitive Visible Normal"})
+        visible_note = client.get("/api/vault/note", params={"path": "Projects/DELAMAIN/visible.md"})
+        private_note = client.get("/api/vault/note", params={"path": "Projects/DELAMAIN/private.md"})
+        sensitive_note = client.get("/api/vault/note", params={"path": "Projects/DELAMAIN/sensitive.md"})
+        neighborhood = client.get(
+            "/api/vault/graph/neighborhood",
+            params={"path": "Projects/DELAMAIN/visible.md"},
+        )
+        enrichment_status = client.get("/api/vault/enrichment/status")
+
+    graph_text = json.dumps(graph.json(), sort_keys=True)
+    preview_text = json.dumps(preview.json(), sort_keys=True)
+    neighborhood_text = json.dumps(neighborhood.json(), sort_keys=True)
+    assert graph.status_code == 200
+    assert [node["path"] for node in graph.json()["nodes"]] == ["Projects/DELAMAIN/visible.md"]
+    assert graph.json()["edges"] == []
+    assert "Private Unique Title" not in graph_text
+    assert "Sensitive Unique Title" not in graph_text
+    assert "private-tag" not in graph_text
+    assert "sensitive-tag" not in graph_text
+    assert preview.status_code == 200
+    assert [item["path"] for item in preview.json()["items"]] == ["Projects/DELAMAIN/visible.md"]
+    assert "Private Unique Title" not in preview_text
+    assert "Sensitive Unique Title" not in preview_text
+    assert visible_note.status_code == 200
+    assert visible_note.json()["path"] == "Projects/DELAMAIN/visible.md"
+    assert visible_note.json()["backlinks"] == []
+    assert private_note.status_code == 403
+    assert sensitive_note.status_code == 403
+    assert neighborhood.status_code == 200
+    assert neighborhood.json()["edges"] == []
+    assert neighborhood.json()["policy_omissions"] == []
+    assert "Private Unique Title" not in neighborhood_text
+    assert "Sensitive Unique Title" not in neighborhood_text
+    assert enrichment_status.status_code == 200
+    assert enrichment_status.json()["node_count"] == 1
+
+
 def test_context_pin_preview_and_run_context_load(test_config):
     _write_vault_fixture(test_config)
     model_client = CapturingModelClient()
