@@ -49,8 +49,14 @@ def test_text_upload_lifecycle(test_config):
         assert upload["original_filename"] == "notes.txt"
         assert upload["extension"] == ".txt"
         assert upload["conversion_status"] == "fresh"
-        assert Path(upload["storage_path"]).is_file()
-        assert test_config.uploads.storage_path in Path(upload["storage_path"]).parents
+        assert "storage_path" not in upload
+        assert "extracted_path" not in upload
+        assert "converted_path" not in upload
+        con = sqlite3.connect(test_config.database.path)
+        storage_path = con.execute("SELECT storage_path FROM uploads WHERE id = ?", (upload["id"],)).fetchone()[0]
+        con.close()
+        assert Path(storage_path).is_file()
+        assert test_config.uploads.storage_path in Path(storage_path).parents
 
         listed = client.get("/api/uploads")
         assert listed.status_code == 200
@@ -332,7 +338,10 @@ def test_promote_upload_copies_original_and_rebuilds_index(test_config, monkeypa
     assert calls["target_exists_during_ensure"] is True
     assert calls["target"].parent == test_config.paths.llm_workspace / "reference"
     assert calls["indexed"] is True
-    assert Path(upload["storage_path"]).is_file()
+    con = sqlite3.connect(test_config.database.path)
+    storage_path = con.execute("SELECT storage_path FROM uploads WHERE id = ?", (upload["id"],)).fetchone()[0]
+    con.close()
+    assert Path(storage_path).is_file()
 
 
 def test_promote_markdown_upload_creates_workspace_bundle(test_config):
@@ -362,7 +371,10 @@ def test_promote_markdown_upload_creates_workspace_bundle(test_config):
     assert document.read_text(encoding="utf-8") == "# Reference Note\n\nBody"
     assert source.read_bytes() == b"# Reference Note\n\nBody"
     assert graph.exists()
-    assert Path(upload["storage_path"]).is_file()
+    con = sqlite3.connect(test_config.database.path)
+    storage_path = con.execute("SELECT storage_path FROM uploads WHERE id = ?", (upload["id"],)).fetchone()[0]
+    con.close()
+    assert Path(storage_path).is_file()
 
 
 def _wait_for_run(client: TestClient, run_id: str) -> dict:

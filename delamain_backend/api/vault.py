@@ -33,11 +33,13 @@ from delamain_backend.schemas import (
     VaultRelationFeedbackRequest,
 )
 from delamain_backend.security.vault import (
+    graph_metadata_node_for_path,
     load_vault_graph,
     preview_context_candidates,
     policy_exclusions,
     read_vault_note,
     resolve_vault_relative_path,
+    vault_metadata_path_allowed,
     vault_graph_neighborhood,
     vault_graph_shortest_path,
 )
@@ -441,8 +443,21 @@ async def init_vault_structured_folder(
 
 
 @router.get("/conversations/{conversation_id}/context/pins")
-async def list_context_pins(conversation_id: str, db: Database = Depends(get_db)):
-    await _require_conversation(db, conversation_id)
+async def list_context_pins(
+    conversation_id: str,
+    config: AppConfig = Depends(get_config),
+    db: Database = Depends(get_db),
+):
+    return await _context_pins_payload(config, db, conversation_id)
+
+
+async def _context_pins_payload(
+    config: AppConfig,
+    db: Database,
+    conversation_id: str,
+) -> dict[str, Any]:
+    conversation = await _require_conversation(db, conversation_id)
+    sensitive_unlocked = bool(conversation["sensitive_unlocked"])
     rows = await db.fetchall(
         """
         SELECT path, title, mode, created_at, updated_at
@@ -452,7 +467,27 @@ async def list_context_pins(conversation_id: str, db: Database = Depends(get_db)
         """,
         (conversation_id,),
     )
-    return {"paths": [row["path"] for row in rows], "items": rows}
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        node = graph_metadata_node_for_path(
+            config,
+            str(row["path"]),
+            sensitive_unlocked=sensitive_unlocked,
+        )
+        if node is None:
+            continue
+        path = str(node.get("path") or row["path"])
+        title = str(node.get("title") or row["title"] or path)
+        items.append(
+            {
+                "path": path,
+                "title": title,
+                "mode": row["mode"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return {"paths": [item["path"] for item in items], "items": items}
 
 
 @router.post("/conversations/{conversation_id}/context/pin")
@@ -502,7 +537,7 @@ async def pin_context(
         summary=f"Pinned {len(pinned)} vault note(s) to conversation context",
         payload={"paths": [item["path"] for item in pinned]},
     )
-    return await list_context_pins(conversation_id, db)
+    return await _context_pins_payload(config, db, conversation_id)
 
 
 @router.delete("/conversations/{conversation_id}/context/pin")
@@ -536,7 +571,7 @@ async def unpin_context(
         summary="Removed vault note from conversation context pins",
         payload={"path": relative_path},
     )
-    return await list_context_pins(conversation_id, db)
+    return await _context_pins_payload(config, db, conversation_id)
 
 
 @router.post("/conversations/{conversation_id}/context/preview")
@@ -556,11 +591,8 @@ async def preview_context(
         )
         paths = [str(item["path"]) for item in candidates]
         if not paths:
-            rows = await db.fetchall(
-                "SELECT path FROM context_pins WHERE conversation_id = ? ORDER BY created_at ASC",
-                (conversation_id,),
-            )
-            paths = [row["path"] for row in rows]
+            pins = await _context_pins_payload(config, db, conversation_id)
+            paths = [str(path) for path in pins["paths"]]
     loaded = load_context_for_run(
         config,
         payload.context_mode or conversation["context_mode"],
@@ -577,6 +609,7 @@ async def preview_context(
 @router.get("/vault/maintenance/proposals")
 async def list_maintenance_proposals(
     status_filter: str | None = Query(default=None, alias="status"),
+    config: AppConfig = Depends(get_config),
     db: Database = Depends(get_db),
 ):
     if status_filter:
@@ -592,12 +625,17 @@ async def list_maintenance_proposals(
         rows = await db.fetchall(
             "SELECT * FROM vault_maintenance_proposals ORDER BY created_at DESC"
         )
-    return [_maintenance_proposal_out(row) for row in rows]
+    return [
+        proposal
+        for row in rows
+        if (proposal := _maintenance_proposal_out(row, config=config)) is not None
+    ]
 
 
 @router.post("/vault/maintenance/proposals", status_code=status.HTTP_201_CREATED)
 async def create_maintenance_proposal(
     payload: VaultMaintenanceProposalCreate,
+    config: AppConfig = Depends(get_config),
     db: Database = Depends(get_db),
 ):
     if payload.conversation_id is not None:
@@ -621,7 +659,7 @@ async def create_maintenance_proposal(
         ),
     )
     row = await db.fetchone("SELECT * FROM vault_maintenance_proposals WHERE id = ?", (proposal_id,))
-    return _maintenance_proposal_out(row)
+    return _maintenance_proposal_out(row, config=config) or _maintenance_proposal_out(row)
 
 
 @router.patch("/vault/maintenance/proposals/{proposal_id}")
@@ -841,12 +879,47 @@ async def _require_maintenance_proposal(db: Database, proposal_id: str) -> dict[
     return row
 
 
-def _maintenance_proposal_out(row: dict[str, Any]) -> dict[str, Any]:
+def _maintenance_proposal_out(
+    row: dict[str, Any],
+    *,
+    config: AppConfig | None = None,
+) -> dict[str, Any] | None:
+    paths = json.loads(row["paths_json"])
+    payload = json.loads(row["payload_json"])
+    if config is not None and not _maintenance_proposal_metadata_allowed(config, paths, payload):
+        return None
     return {
         **row,
-        "paths": json.loads(row["paths_json"]),
-        "payload": json.loads(row["payload_json"]),
+        "paths": paths,
+        "payload": payload,
     }
+
+
+def _maintenance_proposal_metadata_allowed(
+    config: AppConfig,
+    paths: Any,
+    payload: Any,
+) -> bool:
+    for path in _maintenance_proposal_paths(paths, payload):
+        if not vault_metadata_path_allowed(config, path, sensitive_unlocked=False):
+            return False
+    return True
+
+
+def _maintenance_proposal_paths(paths: Any, payload: Any) -> list[str]:
+    collected: list[str] = []
+    if isinstance(paths, list):
+        collected.extend(str(path) for path in paths if str(path).strip())
+    elif isinstance(paths, str) and paths.strip():
+        collected.append(paths.strip())
+    if isinstance(payload, dict):
+        raw_path = payload.get("path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            collected.append(raw_path.strip())
+        raw_paths = payload.get("paths")
+        if isinstance(raw_paths, list):
+            collected.extend(str(path) for path in raw_paths if str(path).strip())
+    return sorted(set(collected))
 
 
 def _decode_helper_json(data: bytes) -> dict[str, Any]:

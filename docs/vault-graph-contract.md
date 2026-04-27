@@ -29,7 +29,7 @@ Sensitive vault content remains locked by default and excluded from graph, conte
 
 Obsidian frontmatter `sensitivity` is a deterministic local privacy signal:
 - `normal` or missing: normal indexing behavior.
-- `sensitive`: excluded from graph, context, enrichment, and maintenance while Sensitive is locked. It may be considered only through the same explicit Sensitive-unlock model used elsewhere.
+- `sensitive`: excluded by the indexer/default graph path while Sensitive is locked. Current production behavior is to omit it from graph, context, enrichment, generated relations, maintenance, omissions, backlinks, and dangling-link surfaces. A future explicit Sensitive-unlock indexing path may expose it only through the same Sensitive-unlock model used elsewhere.
 - `private`: never included in graph, context, enrichment, generated relations, maintenance, omissions, or dangling-link surfaces.
 
 The index helper reads only bounded leading frontmatter bytes locally, parses YAML only when the file starts with `---`, and stops at the closing `---` or `...` within the scan cap. This frontmatter pre-scan is never sent to a model. Path policy, Sensitive vault paths, `.modelignore`, `.delamainignore`, and `vault_policy.md` remain authoritative and can only escalate privacy; frontmatter cannot downgrade those restrictions.
@@ -162,7 +162,7 @@ Graph responses should not include:
 - raw Syncthing config
 - Sensitive content while locked
 - `sensitivity: private` notes, including their paths, titles, tags, aliases, backlinks, dangling-link targets, and policy omission entries
-- links from allowed notes to `private` or locked `sensitive` notes
+- links from allowed notes to `private` or default/locked `sensitive` notes
 - ignored paths
 - secret-like filenames from policy globs
 
@@ -192,7 +192,7 @@ Workspace bundle context resolves from converted `document.md` only. Failed, `ne
 
 Fresh generated tags and note types participate in deterministic context preview scoring. Fresh generated summaries can be used as the payload for oversized selected notes; stale summaries fall back to source snippets/headings instead of being trusted.
 
-Context preview, selected context resolution, enrichment, generated relation exposure, and maintenance proposals must treat `policy_state: private`, `sensitivity: private`, and locked `sensitivity: sensitive` as blocked even if a stale or hand-edited `graph.json` contains such nodes.
+Context preview, selected context resolution, enrichment, generated relation exposure, and maintenance proposals must treat `policy_state: private`, `sensitivity: private`, and default/locked `sensitivity: sensitive` as blocked even if a stale or hand-edited `graph.json` contains such nodes.
 
 ## Heartbeat And Folder Init
 

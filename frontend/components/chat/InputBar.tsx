@@ -194,6 +194,8 @@ export function InputBar({
   const handleSend = useCallback(async () => {
     const trimmed = value.trim()
     if (!trimmed) return
+    if (attachments.some((item) => item.status === 'failed')) return
+    if (attachments.some((item) => item.status === 'uploading')) return
     const promptAttachments = attachments.flatMap((item): PromptAttachment[] => {
       if (!item.uploadId || item.status !== 'ready') return []
       return [{
@@ -242,8 +244,9 @@ export function InputBar({
     )
   }, [])
 
-  const canSend =
-    value.trim().length > 0 && !attachments.some((item) => item.status === 'uploading')
+  const hasUploadingAttachment = attachments.some((item) => item.status === 'uploading')
+  const hasFailedAttachment = attachments.some((item) => item.status === 'failed')
+  const canSend = value.trim().length > 0 && !hasUploadingAttachment && !hasFailedAttachment
 
   useEffect(() => {
     if (!onDraftChange) return
@@ -420,7 +423,20 @@ export function InputBar({
             canSend ? 'hover:opacity-90 text-black' : 'bg-[#1a1a1a] text-[#3a3a3a] cursor-not-allowed'
           )}
           style={canSend ? { backgroundColor: 'var(--accent-blue)' } : {}}
-          aria-label="Send message"
+          aria-label={
+            hasFailedAttachment
+              ? 'Remove failed uploads before sending'
+              : hasUploadingAttachment
+                ? 'Wait for uploads before sending'
+                : 'Send message'
+          }
+          title={
+            hasFailedAttachment
+              ? 'Remove failed uploads before sending'
+              : hasUploadingAttachment
+                ? 'Wait for uploads before sending'
+                : 'Send message'
+          }
         >
           <Send size={13} />
         </button>
@@ -428,7 +444,13 @@ export function InputBar({
 
       {!isDragOver && (
         <p className="text-[9px] font-mono text-[#2a2a2a] mt-1.5 text-center">
-          Shift+Enter for new line &middot; drag files to attach
+          {hasFailedAttachment
+            ? 'Remove failed uploads before sending'
+            : (
+              <>
+                Shift+Enter for new line &middot; drag files to attach
+              </>
+            )}
         </p>
       )}
     </div>

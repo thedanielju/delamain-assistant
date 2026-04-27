@@ -49,6 +49,7 @@ BACKEND_PY="$4"
 LOCAL_HEAD="$5"
 BIN_DIR="${REMOTE_WORKSPACE}/bin"
 export REMOTE_WORKSPACE
+export DELAMAIN_REF_PYTHON="$BACKEND_PY"
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -126,8 +127,8 @@ PY
 log "Install frontend dependencies and build"
 cd "$REMOTE_FRONTEND"
 corepack pnpm install --frozen-lockfile
-timeout 20s systemctl --user stop delamain-frontend.service || true
 corepack pnpm build
+timeout 20s systemctl --user stop delamain-frontend.service || true
 systemctl --user start delamain-frontend.service
 
 log "Restart backend service"

@@ -26,6 +26,7 @@ import { useSSE } from '@/lib/sse'
 import type {
   BackendContextMode,
   BackendMessage,
+  BackendModelRoutes,
   BackendSSEEvent,
   BackendSyncthingResolveAction,
 } from '@/lib/backend-types'
@@ -216,6 +217,28 @@ function vaultContextItemFromNote(note: VaultNoteDetail): VaultContextItem {
     pinned: true,
     excluded: note.excluded,
   }
+}
+
+function uniqueModelOptions(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>()
+  const options: string[] = []
+  for (const value of values) {
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    options.push(value)
+  }
+  return options
+}
+
+function modelOptionsFromSettings(modelsResp: BackendModelRoutes): string[] {
+  const routeIds = (modelsResp.routes ?? []).map((route) => route.id)
+  return uniqueModelOptions([
+    ...routeIds,
+    modelsResp.default,
+    modelsResp.fallback_high_volume,
+    modelsResp.fallback_cheap,
+    modelsResp.paid_fallback,
+  ])
 }
 
 function resolveModelRoute(input: string, modelOptions: string[]): string | null {
@@ -410,12 +433,7 @@ export function useDelamainBackend() {
           ? syncConflicts.conflicts.map(toUISyncthingConflict)
           : []
 
-        const modelOptions = [
-          modelsResp.default,
-          modelsResp.fallback_high_volume,
-          modelsResp.fallback_cheap,
-          modelsResp.paid_fallback,
-        ].filter((value, index, arr): value is string => Boolean(value) && arr.indexOf(value) === index)
+        const modelOptions = modelOptionsFromSettings(modelsResp)
 
         let taskModel = settingsResp.settings.task_model || DEFAULT_TASK_MODEL
         const legacyTaskModel =

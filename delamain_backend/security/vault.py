@@ -378,6 +378,55 @@ def graph_node_for_path(
     return None
 
 
+def graph_metadata_node_for_path(
+    config: AppConfig,
+    raw_path: str,
+    *,
+    sensitive_unlocked: bool = False,
+) -> dict[str, Any] | None:
+    indexed = _load_filtered_graph_index(config, sensitive_unlocked=sensitive_unlocked)
+    try:
+        node_id = _resolve_index_node_id(indexed, raw_path)
+    except FileNotFoundError:
+        return None
+    return indexed["nodes"].get(node_id)
+
+
+def vault_metadata_path_allowed(
+    config: AppConfig,
+    raw_path: str,
+    *,
+    sensitive_unlocked: bool = False,
+) -> bool:
+    target = str(raw_path or "").strip()
+    if not target:
+        return False
+    indexed = _load_filtered_graph_index(config, sensitive_unlocked=sensitive_unlocked)
+    try:
+        node_id = _resolve_index_node_id(indexed, target)
+    except FileNotFoundError:
+        return False
+    if node_id in indexed["nodes"]:
+        return True
+    if node_id in indexed["omitted_nodes"]:
+        return False
+    try:
+        relative_path = resolve_vault_relative_path(
+            config,
+            target,
+            sensitive_unlocked=sensitive_unlocked,
+            must_exist=False,
+        )
+    except (ToolPolicyDenied, SensitiveLocked, OSError):
+        return False
+    if indexed["missing"]:
+        return True
+    absolute_path = (config.paths.vault / relative_path).expanduser().resolve(strict=False)
+    if absolute_path.exists():
+        return False
+    return True
+
+
 def read_vault_note(
     config: AppConfig,
     raw_path: str,
@@ -415,7 +464,7 @@ def read_vault_note(
         sha256=hashlib.sha256(data).hexdigest(),
         truncated=truncated,
         tags=tags,
-        backlinks=_backlinks_for_path(config, relative_path),
+        backlinks=_backlinks_for_path(config, relative_path, sensitive_unlocked=sensitive_unlocked),
         source_type=source_type,
     )
 
@@ -981,14 +1030,33 @@ def _allowed_relative_path(
         return None
 
 
-def _backlinks_for_path(config: AppConfig, relative_path: str) -> list[str]:
+def _backlinks_for_path(
+    config: AppConfig,
+    relative_path: str,
+    *,
+    sensitive_unlocked: bool,
+) -> list[str]:
     backlinks = _read_json_file(vault_index_dir(config) / "backlinks.json")
     if not isinstance(backlinks, dict):
         return []
     raw = backlinks.get(relative_path)
     if raw is None:
         raw = backlinks.get(str(config.paths.vault / relative_path))
-    return _string_list(raw)
+    allowed_paths = _allowed_backlink_paths(config, sensitive_unlocked=sensitive_unlocked)
+    return [path for path in _string_list(raw) if path in allowed_paths]
+
+
+def _allowed_backlink_paths(config: AppConfig, *, sensitive_unlocked: bool) -> set[str]:
+    graph = load_vault_graph(config, sensitive_unlocked=sensitive_unlocked, limit=5000)
+    paths: set[str] = set()
+    for node in graph.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        for key in ("path", "id", "document_md"):
+            value = node.get(key)
+            if value:
+                paths.add(str(value))
+    return paths
 
 
 def _tags_for_path(config: AppConfig, relative_path: str) -> list[str]:

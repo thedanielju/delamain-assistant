@@ -238,7 +238,20 @@ def upload_row_out(row: dict[str, Any]) -> dict[str, Any]:
     else:
         status = conversion_status
     return {
-        **row,
+        "id": row["id"],
+        "original_filename": row["original_filename"],
+        "extension": row.get("extension"),
+        "mime_type": row.get("mime_type"),
+        "sha256": row.get("sha256"),
+        "conversion_status": conversion_status,
+        "conversion_error": row.get("conversion_error"),
+        "conversion_converter": row.get("conversion_converter"),
+        "promoted_category": promoted_category,
+        "promoted_bundle_id": promoted_bundle_id,
+        "promoted_at": row.get("promoted_at"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "expires_at": row.get("expires_at"),
         "filename": row["original_filename"],
         "name": row["original_filename"],
         "content_type": row.get("mime_type"),

@@ -303,6 +303,40 @@ Multipart form upload with one part named `file`.
 
 Response: `UploadOut`
 
+`UploadOut` public fields:
+
+```json
+{
+  "id": "upl_...",
+  "original_filename": "paper.pdf",
+  "filename": "paper.pdf",
+  "name": "paper.pdf",
+  "extension": ".pdf",
+  "mime_type": "application/pdf",
+  "content_type": "application/pdf",
+  "byte_count": 12345,
+  "size": 12345,
+  "sha256": "...",
+  "status": "converted",
+  "conversion_status": "fresh",
+  "preview_status": "preview_ready",
+  "conversion_converter": "pymupdf",
+  "conversion_error": null,
+  "error_message": null,
+  "category": null,
+  "promoted": false,
+  "promoted_path": null,
+  "promoted_category": null,
+  "promoted_bundle_id": null,
+  "promoted_at": null,
+  "expires_at": null,
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+Upload responses must not expose backend-local storage/cache paths such as `storage_path`, `extracted_path`, or `converted_path`. Those paths are implementation details used only server-side for download, preview, conversion, promotion, and cleanup.
+
 ### GET /api/uploads
 
 Returns pending and promoted intake records.
@@ -330,9 +364,45 @@ Returns pending and promoted intake records.
 }
 ```
 
+### GET /api/uploads/{upload_id}
+
+Returns one `UploadOut`. Missing uploads return `404`.
+
+### GET /api/uploads/{upload_id}/download
+
+Returns the stored original upload as a file response, not JSON. Missing upload records or missing stored originals return `404`. The response uses the stored MIME type when known and the original filename as the download filename.
+
 ### GET /api/uploads/{upload_id}/preview
 
 Returns bounded extracted text/markdown preview fields. `content`, `text_preview`, `markdown_preview`, and `extracted_text` are additive aliases for current frontend compatibility.
+
+Response:
+
+```json
+{
+  "upload": { "...": "UploadOut" },
+  "upload_id": "upl_...",
+  "status": "converted",
+  "filename": "paper.pdf",
+  "content_type": "application/pdf",
+  "size": 12345,
+  "content": "bounded extracted text",
+  "text_preview": "bounded extracted text",
+  "markdown_preview": "bounded extracted text",
+  "extracted_text": "bounded extracted text",
+  "truncated": false,
+  "char_count": 1234,
+  "total_char_count": 1234,
+  "token_estimate": 309,
+  "metadata": {
+    "truncated": false,
+    "char_count": 1234,
+    "total_char_count": 1234,
+    "converter": "pymupdf"
+  },
+  "error_message": null
+}
+```
 
 ### POST /api/uploads/{upload_id}/convert
 
@@ -348,13 +418,44 @@ Request:
 
 `category` is `"reference"` or `"syllabi"`. Promotion copies the original into the matching `llm-workspace` category, creates/refreshes the workspace document bundle with `document.md`, and rebuilds the vault index.
 
+Response:
+
+```json
+{
+  "upload": { "...": "UploadOut" },
+  "ensure": {
+    "ok": true,
+    "bundle": { "...": "workspace bundle manifest summary" },
+    "warnings": [],
+    "errors": [],
+    "vault_index": {
+      "ok": true,
+      "status": "ok",
+      "summary": { "...": "index build summary" },
+      "warnings": [],
+      "errors": []
+    }
+  }
+}
+```
+
 ### DELETE /api/uploads/{upload_id}
 
-Deletes one upload and its temporary storage.
+Deletes one upload and its temporary storage. Response: `204 No Content`. Missing uploads return `404`.
+
+### DELETE /api/uploads
+
+Deletes all unpromoted uploads and temporary storage.
+
+Response:
+
+```json
+{ "deleted": 3 }
+```
 
 ### POST /api/uploads/clear
 
-Deletes all unpromoted uploads and temporary storage.
+Compatibility alias for `DELETE /api/uploads`; returns the same `{"deleted": number}` shape.
 
 ## MessageOut Shape
 
@@ -722,7 +823,8 @@ Core policy:
 - Vault maintenance is queued and reversible; no hard delete in V1.
 - Syncthing status may inform UX through sanitized APIs only.
 - Obsidian frontmatter `sensitivity` is read locally by the index helper using a bounded leading-byte pre-scan before any body parsing. It is never sent to a model.
-- `sensitivity: normal` or missing uses normal indexing behavior; `sensitivity: sensitive` is excluded while Sensitive is locked; `sensitivity: private` is never exposed in graph, context, enrichment, generated relations, maintenance, omissions, backlinks, or dangling-link surfaces.
+- `sensitivity: normal` or missing uses normal indexing behavior; `sensitivity: sensitive` is excluded by the current indexer/default graph path while Sensitive is locked; `sensitivity: private` is never exposed in graph, context, enrichment, generated relations, maintenance, omissions, backlinks, or dangling-link surfaces.
+- A future explicit Sensitive-unlock indexing path may expose `sensitivity: sensitive` only through the same Sensitive-unlock model used elsewhere. Frontend code should assume default graph/context responses omit these notes.
 - Path policy, Sensitive vault roots, `.modelignore`, `.delamainignore`, and `vault_policy.md` remain authoritative. Frontmatter cannot downgrade those restrictions.
 
 ### GET /api/vault/graph
@@ -798,11 +900,11 @@ Response:
 
 Edge kinds: `wikilink`, `markdown_link`, `backlink`, `tag`, `property`, `generated_candidate`, `accepted_generated`, `rejected_generated`.
 
-The backend filters graph nodes defensively by `sensitivity` and `policy_state` before returning nodes or edges. If a stale `graph.json` contains a `private` node, it is silently excluded even when Sensitive is unlocked. If it contains a `sensitive` node, it is excluded unless the existing explicit Sensitive unlock path allows that surface. Links from visible notes to private or locked-sensitive notes must not appear as graph edges, backlinks, dangling links, generated relations, or policy omission details.
+The backend filters graph nodes defensively by `sensitivity` and `policy_state` before returning nodes or edges. If a stale `graph.json` contains a `private` node, it is silently excluded even when Sensitive is unlocked. If it contains a `sensitive` node, the current default behavior is exclusion unless a future explicit Sensitive-unlock indexing path allows that surface. Links from visible notes to private or default/locked-sensitive notes must not appear as graph edges, backlinks, dangling links, generated relations, or policy omission details.
 
 ### GET /api/vault/note
 
-Returns a bounded preview for an index-known, policy-allowed note. `private` notes and locked `sensitive` notes are treated as unavailable even if a stale index contains them.
+Returns a bounded preview for an index-known, policy-allowed note. `private` notes and default/locked `sensitive` notes are treated as unavailable even if a stale index contains them.
 
 Query parameters:
 
@@ -871,7 +973,7 @@ Preview items are advisory until pinned/selected by the user. Prompt submission 
 
 Fresh generated tags and note types may influence deterministic preview reasons such as `generated_tag_match` and `note_type_match`. Fresh generated summaries may be used as the payload for oversized selected notes. Stale generated summaries are labeled stale and should not be trusted as payloads.
 
-Context preview and selected context resolution use only currently policy-allowed graph nodes. They must not surface `private` metadata or locked `sensitive` metadata through titles, paths, aliases, tags, reasons, omission records, or failed context payloads.
+Context preview and selected context resolution use only currently policy-allowed graph nodes. They must not surface `private` metadata or default/locked `sensitive` metadata through titles, paths, aliases, tags, reasons, omission records, or failed context payloads.
 
 ### Vault AI Enrichment
 
@@ -907,7 +1009,7 @@ POST   /api/vault/enrichment/relations/feedback
 }
 ```
 
-The endpoint runs a bounded task-model pass over policy-allowed indexed notes/documents, writes sidecar metadata to `llm-workspace/vault-index/generated/metadata.json`, and may create `generated_tag_suggestion` maintenance proposals. It excludes `private` and locked `sensitive` notes before body reads or model calls. It does not block prompt sends and does not write source notes directly.
+The endpoint runs a bounded task-model pass over policy-allowed indexed notes/documents, writes sidecar metadata to `llm-workspace/vault-index/generated/metadata.json`, and may create `generated_tag_suggestion` maintenance proposals. It excludes `private` and default/locked `sensitive` notes before body reads or model calls. It does not block prompt sends and does not write source notes directly.
 
 `GET /api/vault/enrichment/batch` returns:
 
@@ -955,7 +1057,7 @@ Generated relation feedback request:
 }
 ```
 
-`decision` is `accepted` or `rejected`. Accepted relations appear as `accepted_generated` graph edges. Rejected relations are remembered and suppressed. Generated relations are exposed only when both endpoints are present in the current policy-allowed graph, neither endpoint is `private` or locked `sensitive`, and the source generated metadata still matches the indexed node `sha256`.
+`decision` is `accepted` or `rejected`. Accepted relations appear as `accepted_generated` graph edges. Rejected relations are remembered and suppressed. Generated relations are exposed only when both endpoints are present in the current policy-allowed graph, neither endpoint is `private` or default/locked `sensitive`, and the source generated metadata still matches the indexed node `sha256`.
 
 Graph nodes may also include advisory G5 fields:
 
@@ -1030,7 +1132,7 @@ Exact replacement gates:
 - one change per proposal in V1
 - target must be an indexed `vault_note`
 - target must pass write path policy with Sensitive locked
-- target must not be `private` or locked `sensitive`
+- target must not be `private` or default/locked `sensitive`
 - target must not be in sanitized Syncthing conflict reports
 - `old_text` must occur exactly once
 - `expected_sha256`, when present, must match current bytes

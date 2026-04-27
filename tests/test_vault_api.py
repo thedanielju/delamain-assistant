@@ -173,7 +173,7 @@ def test_vault_note_requires_index_known_allowed_path(test_config):
         assert ok.status_code == 200
         assert ok.json()["path"] == "Projects/DELAMAIN/note.md"
         assert ok.json()["content"].startswith("# Test Note")
-        assert ok.json()["backlinks"] == ["Projects/DELAMAIN/source.md"]
+        assert ok.json()["backlinks"] == []
 
         traversal = client.get("/api/vault/note", params={"path": "../outside.md"})
         assert traversal.status_code == 403
@@ -299,6 +299,140 @@ def test_frontmatter_sensitivity_nodes_are_privacy_filtered_across_vault_surface
     assert "Sensitive Unique Title" not in neighborhood_text
     assert enrichment_status.status_code == 200
     assert enrichment_status.json()["node_count"] == 1
+
+
+def test_vault_note_filters_stale_private_backlinks(test_config):
+    target = test_config.paths.vault / "Projects" / "DELAMAIN" / "target.md"
+    public_source = test_config.paths.vault / "Projects" / "DELAMAIN" / "source.md"
+    private_source = test_config.paths.vault / "Projects" / "DELAMAIN" / "private-source.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# Target\n\nVisible body.\n", encoding="utf-8")
+    public_source.write_text("# Source\n\nLinks to [[target]].\n", encoding="utf-8")
+    private_source.write_text(
+        "---\nsensitivity: private\n---\n# Private Source\n\nPRIVATE_BACKLINK_BODY\n",
+        encoding="utf-8",
+    )
+    index = test_config.paths.llm_workspace / "vault-index"
+    index.mkdir(parents=True, exist_ok=True)
+    (index / "graph.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-04-25T00:00:00Z",
+                "nodes": [
+                    {
+                        "id": "Projects/DELAMAIN/target.md",
+                        "path": "Projects/DELAMAIN/target.md",
+                        "title": "Target",
+                    },
+                    {
+                        "id": "Projects/DELAMAIN/source.md",
+                        "path": "Projects/DELAMAIN/source.md",
+                        "title": "Source",
+                    },
+                    {
+                        "id": "Projects/DELAMAIN/private-source.md",
+                        "path": "Projects/DELAMAIN/private-source.md",
+                        "title": "Private Source",
+                        "sensitivity": "private",
+                    },
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (index / "backlinks.json").write_text(
+        json.dumps(
+            {
+                "Projects/DELAMAIN/target.md": [
+                    "Projects/DELAMAIN/source.md",
+                    "Projects/DELAMAIN/private-source.md",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(test_config)
+
+    with TestClient(app) as client:
+        note = client.get("/api/vault/note", params={"path": "Projects/DELAMAIN/target.md"})
+
+    assert note.status_code == 200
+    body = json.dumps(note.json(), sort_keys=True)
+    assert note.json()["backlinks"] == ["Projects/DELAMAIN/source.md"]
+    assert "private-source" not in body
+    assert "Private Source" not in body
+
+
+def test_context_pins_are_revalidated_against_current_privacy(test_config):
+    _write_vault_fixture(test_config)
+    app = create_app(test_config)
+
+    with TestClient(app) as client:
+        conversation_id = client.post("/api/conversations", json={}).json()["id"]
+        pinned = client.post(
+            f"/api/conversations/{conversation_id}/context/pin",
+            json={"paths": ["Projects/DELAMAIN/note.md"]},
+        )
+        assert pinned.status_code == 200
+        assert pinned.json()["paths"] == ["Projects/DELAMAIN/note.md"]
+
+        graph_path = test_config.paths.llm_workspace / "vault-index" / "graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph["nodes"][0]["sensitivity"] = "private"
+        graph["nodes"][0]["title"] = "Private Pin Title"
+        graph_path.write_text(json.dumps(graph), encoding="utf-8")
+
+        listed = client.get(f"/api/conversations/{conversation_id}/context/pins")
+        preview = client.post(f"/api/conversations/{conversation_id}/context/preview", json={})
+
+    assert listed.status_code == 200
+    assert listed.json() == {"paths": [], "items": []}
+    preview_text = json.dumps(preview.json(), sort_keys=True)
+    assert preview.status_code == 200
+    assert all(
+        item.get("mode") != "vault_note_pin"
+        for item in preview.json()["items"]
+    )
+    assert "Projects/DELAMAIN/note.md" not in preview_text
+    assert "Private Pin Title" not in preview_text
+
+
+def test_maintenance_proposal_list_suppresses_stale_private_metadata(test_config):
+    _write_vault_fixture(test_config)
+    app = create_app(test_config)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/vault/maintenance/proposals",
+            json={
+                "kind": "generated_tag_suggestion",
+                "title": "PRIVATE_STALE_PROPOSAL_TITLE",
+                "paths": ["Projects/DELAMAIN/note.md"],
+                "payload": {
+                    "path": "Projects/DELAMAIN/note.md",
+                    "tag": "PRIVATE_STALE_TAG",
+                },
+            },
+        )
+        assert created.status_code == 201
+
+        graph_path = test_config.paths.llm_workspace / "vault-index" / "graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph["nodes"][0]["sensitivity"] = "private"
+        graph_path.write_text(json.dumps(graph), encoding="utf-8")
+
+        listed = client.get("/api/vault/maintenance/proposals")
+        proposed = client.get("/api/vault/maintenance/proposals?status=proposed")
+
+    assert listed.status_code == 200
+    assert proposed.status_code == 200
+    assert listed.json() == []
+    assert proposed.json() == []
+    listed_text = json.dumps(listed.json(), sort_keys=True)
+    assert "Projects/DELAMAIN/note.md" not in listed_text
+    assert "PRIVATE_STALE_PROPOSAL_TITLE" not in listed_text
+    assert "PRIVATE_STALE_TAG" not in listed_text
 
 
 def test_context_pin_preview_and_run_context_load(test_config):
