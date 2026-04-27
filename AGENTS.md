@@ -93,7 +93,7 @@ Obsidian project docs:
 - Production backend service source is `/home/danielju/delamain/backend`; production frontend service source is `/home/danielju/delamain/frontend`.
 - `llm-workspace/bin` should contain wrapper scripts only. Helper implementation belongs in repo package `delamain_ref/`.
 - After helper behavior changes, install wrappers from `scripts/helper_wrappers/` and rebuild with `/home/danielju/llm-workspace/bin/delamain-vault-index build --json`.
-- Upload intake is backend-owned under `delamain_backend/uploads.py` and API-owned under `delamain_backend/api/uploads.py`. Browser uploads are temporary originals plus extracted context; promotion copies into repo-helper-managed workspace bundles.
+- Upload intake is backend-owned under `delamain_backend/uploads.py` and API-owned under `delamain_backend/api/uploads.py`. Browser uploads are temporary originals plus extracted fallback context; rich prompt attachments pass native file parts through `delamain_backend/agent/litellm_client.py` when supported, and promotion copies into repo-helper-managed workspace bundles.
 - If deployment must be manual, keep backend repo sync, frontend service sync, helper wrapper install, vault-index rebuild, frontend build, and backend/frontend restarts as distinct steps.
 
 ## Current Development Posture

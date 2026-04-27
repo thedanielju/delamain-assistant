@@ -286,9 +286,10 @@ async def submit_prompt(
                 """
                 INSERT INTO run_upload_attachments(
                     id, run_id, upload_id, original_filename, representation, included,
-                    byte_count, sha256, content_path, content_sha256, context_char_count
+                    byte_count, sha256, original_path, content_path, content_sha256,
+                    context_char_count, mime_type, extension, native_context
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id("rupl"),
@@ -299,9 +300,13 @@ async def submit_prompt(
                     1 if attachment["included"] else 0,
                     attachment["byte_count"],
                     attachment["sha256"],
+                    attachment["original_path"],
                     attachment["content_path"],
                     attachment["content_sha256"],
                     attachment["context_char_count"],
+                    attachment["mime_type"],
+                    attachment["extension"],
+                    1 if attachment["native_context"] else 0,
                 ),
             )
         )

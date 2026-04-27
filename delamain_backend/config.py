@@ -100,6 +100,7 @@ class MaintenanceConfig:
 class UploadsConfig:
     storage_path: Path
     max_size_bytes: int
+    native_file_max_size_bytes: int
     preview_char_limit: int
     context_char_limit: int
 
@@ -258,6 +259,12 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                 os.environ.get(
                     "DELAMAIN_UPLOAD_MAX_SIZE_BYTES",
                     uploads.get("max_size_bytes", 100 * 1024 * 1024),
+                )
+            ),
+            native_file_max_size_bytes=int(
+                os.environ.get(
+                    "DELAMAIN_UPLOAD_NATIVE_FILE_MAX_SIZE_BYTES",
+                    uploads.get("native_file_max_size_bytes", 25 * 1024 * 1024),
                 )
             ),
             preview_char_limit=int(

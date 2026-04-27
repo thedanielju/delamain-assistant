@@ -359,3 +359,15 @@ MIGRATIONS.append(
         """,
     )
 )
+
+MIGRATIONS.append(
+    (
+        8,
+        """
+        ALTER TABLE run_upload_attachments ADD COLUMN original_path TEXT;
+        ALTER TABLE run_upload_attachments ADD COLUMN mime_type TEXT;
+        ALTER TABLE run_upload_attachments ADD COLUMN extension TEXT;
+        ALTER TABLE run_upload_attachments ADD COLUMN native_context INTEGER NOT NULL DEFAULT 0;
+        """,
+    )
+)

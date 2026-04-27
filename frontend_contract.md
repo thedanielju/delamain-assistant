@@ -289,13 +289,13 @@ Uploaded attachments are also explicit run context. The browser uploads files im
 }
 ```
 
-`representation` is `"rich"` or `"converted"` for UI state. The current model path receives bounded extracted/converted text, not native provider-side file attachments. The original rich file remains stored intact until deleted or promoted.
+`representation` is `"rich"` or `"converted"`. `"rich"` is the default composer mode: DELAMAIN passes the original file to LiteLLM as a provider-native file part for native-file-capable routes, with automatic extracted-text fallback when the route cannot accept native files. `"converted"` sends only bounded extracted/converted text. The original rich file remains stored intact until deleted or promoted.
 
 ## Upload Intake
 
 Upload intake is for temporary documents from `term.danielju.com`, phones, WinPC, or the MacBook. Storage is backend-local and must remain outside the Obsidian vault, Sensitive vault, and Syncthing-backed `llm-workspace` until the user explicitly promotes an upload.
 
-Supported upload extensions are `.pdf`, `.docx`, `.rtf`, `.odt`, `.txt`, and `.md`. Archive/executable-like extensions are rejected. The backend computes sha256, stores the original file, and creates a bounded text/markdown extraction for preview and model context. No upload content is sent to a model until the upload is included in a prompt.
+Supported upload extensions are `.pdf`, `.docx`, `.rtf`, `.odt`, `.txt`, and `.md`. Archive/executable-like extensions are rejected. The backend computes sha256, stores the original file, and creates a bounded text/markdown extraction for preview and converted-mode fallback. No upload content is sent to a model until the upload is included in a prompt.
 
 ### POST /api/uploads
 

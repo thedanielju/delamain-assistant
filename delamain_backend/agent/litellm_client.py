@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
 import io
 import json
 import multiprocessing
 import queue as queue_module
 import uuid
+from pathlib import Path
 from typing import Any, Protocol
 
 from delamain_backend.agent.router import api_family_for_route
@@ -27,6 +30,22 @@ _SENSITIVE_RESPONSE_HEADER_MARKERS = (
     "secret",
     "token",
 )
+_NATIVE_FILE_PROVIDERS = (
+    "anthropic",
+    "bedrock",
+    "gemini",
+    "github_copilot",
+    "google",
+    "openai",
+    "vertex_ai",
+)
+_NATIVE_FILE_MODEL_MARKERS = (
+    "claude",
+    "gemini",
+    "gpt-4o",
+    "gpt-5",
+)
+_TEXT_FILE_EXTENSIONS = {".md", ".txt"}
 
 
 class ModelCallError(RuntimeError):
@@ -52,7 +71,7 @@ class StubModelClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        prompt = messages[-1]["content"] if messages else ""
+        prompt = _content_to_text(messages[-1].get("content")) if messages else ""
         if _should_stub_tool_call(prompt, messages):
             return {
                 "id": f"stub_{uuid.uuid4().hex}",
@@ -91,14 +110,31 @@ class LiteLLMModelClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         api_family = api_family_for_route(model_route)
-        formatted_messages = format_messages_for_api_family(messages, api_family)
-        raw = await _run_litellm_in_child_process(
-            model_route=model_route,
-            api_family=api_family,
-            messages=formatted_messages,
-            tools=tools or [],
-            timeout_seconds=self.timeout_seconds,
-        )
+        formatted_messages = format_messages_for_api_family(messages, api_family, model_route)
+        try:
+            raw = await _run_litellm_in_child_process(
+                model_route=model_route,
+                api_family=api_family,
+                messages=formatted_messages,
+                tools=tools or [],
+                timeout_seconds=self.timeout_seconds,
+            )
+        except ModelCallError as exc:
+            if not _should_retry_with_file_text_fallback(exc, messages):
+                raise
+            fallback_messages = format_messages_for_api_family(
+                messages,
+                api_family,
+                model_route,
+                force_file_text_fallback=True,
+            )
+            raw = await _run_litellm_in_child_process(
+                model_route=model_route,
+                api_family=api_family,
+                messages=fallback_messages,
+                tools=tools or [],
+                timeout_seconds=self.timeout_seconds,
+            )
         return normalize_model_result(raw, model_route=model_route, api_family=api_family)
 
 
@@ -222,26 +258,51 @@ def normalize_model_result(raw: Any, *, model_route: str, api_family: str) -> di
 
 
 def format_messages_for_api_family(
-    messages: list[dict[str, Any]], api_family: str
+    messages: list[dict[str, Any]],
+    api_family: str,
+    model_route: str | None = None,
+    *,
+    force_file_text_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     if api_family == "responses":
         formatted: list[dict[str, Any]] = []
         for message in messages:
-            response_message = _format_response_message(message)
+            response_message = _format_response_message(
+                message,
+                model_route or "",
+                force_file_text_fallback=force_file_text_fallback,
+            )
             if isinstance(response_message, list):
                 formatted.extend(response_message)
             else:
                 formatted.append(response_message)
         return formatted
-    return [_format_chat_message(message) for message in messages]
+    return [
+        _format_chat_message(
+            message,
+            model_route or "",
+            force_file_text_fallback=force_file_text_fallback,
+        )
+        for message in messages
+    ]
 
 
-def _format_chat_message(message: dict[str, Any]) -> dict[str, Any]:
+def _format_chat_message(
+    message: dict[str, Any],
+    model_route: str = "",
+    *,
+    force_file_text_fallback: bool = False,
+) -> dict[str, Any]:
     role = message.get("role")
     if role == "assistant" and message.get("tool_calls"):
         return {
             "role": "assistant",
-            "content": message.get("content") or None,
+            "content": _format_chat_content(
+                message.get("content"),
+                model_route,
+                force_file_text_fallback=force_file_text_fallback,
+            )
+            or None,
             "tool_calls": [
                 {
                     "id": call["id"],
@@ -262,15 +323,24 @@ def _format_chat_message(message: dict[str, Any]) -> dict[str, Any]:
         }
     return {
         "role": str(role),
-        "content": str(message.get("content") or ""),
+        "content": _format_chat_content(
+            message.get("content"),
+            model_route,
+            force_file_text_fallback=force_file_text_fallback,
+        ),
     }
 
 
-def _format_response_message(message: dict[str, Any]) -> dict[str, Any] | list[dict[str, Any]]:
+def _format_response_message(
+    message: dict[str, Any],
+    model_route: str = "",
+    *,
+    force_file_text_fallback: bool = False,
+) -> dict[str, Any] | list[dict[str, Any]]:
     role = message.get("role")
     if role == "assistant" and message.get("tool_calls"):
         formatted: list[dict[str, Any]] = []
-        content = str(message.get("content") or "")
+        content = _content_to_text(message.get("content"))
         if content:
             formatted.append({"role": "assistant", "content": content})
         formatted.extend(
@@ -291,8 +361,217 @@ def _format_response_message(message: dict[str, Any]) -> dict[str, Any] | list[d
         }
     return {
         "role": str(role),
-        "content": str(message.get("content") or ""),
+        "content": _format_response_content(
+            message.get("content"),
+            model_route,
+            force_file_text_fallback=force_file_text_fallback,
+        ),
     }
+
+
+def _format_chat_content(
+    content: Any,
+    model_route: str,
+    *,
+    force_file_text_fallback: bool = False,
+) -> Any:
+    if not isinstance(content, list):
+        return str(content or "")
+    parts = [
+        _format_content_part(
+            part,
+            api_family="chat_completions",
+            model_route=model_route,
+            force_file_text_fallback=force_file_text_fallback,
+        )
+        for part in content
+    ]
+    text_parts = [part["text"] for part in parts if isinstance(part, dict) and part.get("type") == "text"]
+    has_file = any(isinstance(part, dict) and part.get("type") == "file" for part in parts)
+    if not has_file:
+        return "\n\n".join(text for text in text_parts if text)
+    return [part for part in parts if part]
+
+
+def _format_response_content(
+    content: Any,
+    model_route: str,
+    *,
+    force_file_text_fallback: bool = False,
+) -> Any:
+    if not isinstance(content, list):
+        return str(content or "")
+    parts = [
+        _format_content_part(
+            part,
+            api_family="responses",
+            model_route=model_route,
+            force_file_text_fallback=force_file_text_fallback,
+        )
+        for part in content
+    ]
+    text_parts = [
+        part["text"]
+        for part in parts
+        if isinstance(part, dict) and part.get("type") in {"input_text", "text"}
+    ]
+    has_file = any(
+        isinstance(part, dict) and part.get("type") in {"input_file", "file"}
+        for part in parts
+    )
+    if not has_file:
+        return "\n\n".join(text for text in text_parts if text)
+    return [part for part in parts if part]
+
+
+def _format_content_part(
+    part: Any,
+    *,
+    api_family: str,
+    model_route: str,
+    force_file_text_fallback: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(part, dict):
+        return _text_part(str(part), api_family)
+    part_type = str(part.get("type") or "")
+    if part_type == "delamain_upload_file":
+        return _format_delamain_file_part(
+            part.get("file") or {},
+            api_family,
+            model_route,
+            force_file_text_fallback=force_file_text_fallback,
+        )
+    if part_type == "text":
+        return _text_part(str(part.get("text") or ""), api_family)
+    return part
+
+
+def _format_delamain_file_part(
+    file_info: Any,
+    api_family: str,
+    model_route: str,
+    *,
+    force_file_text_fallback: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(file_info, dict):
+        return _text_part("", api_family)
+    fallback_text = str(file_info.get("fallback_text") or "")
+    filename = str(file_info.get("filename") or "upload")
+    if force_file_text_fallback or not _route_supports_native_file(model_route, file_info):
+        return _fallback_file_text_part(filename, fallback_text, api_family)
+    data_url = _file_data_url(file_info)
+    if not data_url:
+        return _fallback_file_text_part(filename, fallback_text, api_family)
+    mime_type = str(file_info.get("mime_type") or "application/octet-stream")
+    if api_family == "responses":
+        return {
+            "type": "input_file",
+            "filename": filename,
+            "file_data": data_url,
+        }
+    return {
+        "type": "file",
+        "file": {
+            "filename": filename,
+            "file_data": data_url,
+            "format": mime_type,
+        },
+    }
+
+
+def _route_supports_native_file(model_route: str, file_info: dict[str, Any]) -> bool:
+    filename = str(file_info.get("filename") or "")
+    extension = Path(filename).suffix.lower()
+    if extension in _TEXT_FILE_EXTENSIONS:
+        return False
+    route = str(model_route or "").lower()
+    provider = route.split("/", 1)[0]
+    if provider in _NATIVE_FILE_PROVIDERS:
+        return True
+    if provider == "openrouter":
+        return any(marker in route for marker in _NATIVE_FILE_MODEL_MARKERS)
+    return False
+
+
+def _file_data_url(file_info: dict[str, Any]) -> str | None:
+    path = Path(str(file_info.get("path") or ""))
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    expected_sha = str(file_info.get("sha256") or "")
+    if expected_sha and hashlib.sha256(data).hexdigest() != expected_sha:
+        return None
+    mime_type = str(file_info.get("mime_type") or "application/octet-stream")
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _fallback_file_text_part(filename: str, fallback_text: str, api_family: str) -> dict[str, Any]:
+    if fallback_text:
+        text = (
+            f"Native file attachment was not available for {filename}; "
+            "using extracted text fallback.\n\n"
+            f"{fallback_text}"
+        )
+    else:
+        text = f"Native file attachment was not available for {filename}."
+    return _text_part(text, api_family)
+
+
+def _text_part(text: str, api_family: str) -> dict[str, str]:
+    if api_family == "responses":
+        return {"type": "input_text", "text": text}
+    return {"type": "text", "text": text}
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    parts.append(str(part.get("text") or ""))
+                elif part.get("type") == "delamain_upload_file":
+                    file_info = part.get("file") or {}
+                    if isinstance(file_info, dict):
+                        parts.append(str(file_info.get("fallback_text") or ""))
+            else:
+                parts.append(str(part))
+        return "\n\n".join(part for part in parts if part)
+    return str(content or "")
+
+
+def _should_retry_with_file_text_fallback(
+    exc: ModelCallError,
+    messages: list[dict[str, Any]],
+) -> bool:
+    if not _messages_have_native_file_parts(messages):
+        return False
+    lowered = str(exc).lower()
+    markers = (
+        "file",
+        "pdf",
+        "document",
+        "input_file",
+        "file_data",
+        "unsupported",
+        "invalid",
+        "content type",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _messages_have_native_file_parts(messages: list[dict[str, Any]]) -> bool:
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        if any(
+            isinstance(part, dict) and part.get("type") == "delamain_upload_file"
+            for part in content
+        ):
+            return True
+    return False
 
 
 def _extract_text(data: Any, api_family: str) -> str:

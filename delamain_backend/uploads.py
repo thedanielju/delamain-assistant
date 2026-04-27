@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import mimetypes
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -420,6 +421,14 @@ def upload_content_path(row: dict[str, Any]) -> Path | None:
     return Path(raw) if raw else None
 
 
+def _content_mime_type(row: dict[str, Any]) -> str:
+    explicit = row.get("mime_type")
+    if explicit:
+        return str(explicit)
+    guessed, _ = mimetypes.guess_type(str(row.get("original_filename") or ""))
+    return guessed or "application/octet-stream"
+
+
 async def attachment_records_for_prompt(
     db: Database,
     config: AppConfig,
@@ -438,19 +447,32 @@ async def attachment_records_for_prompt(
         included = bool(attachment.include)
         if included:
             row = await ensure_upload_content(db, config, upload_id)
+            original_path = Path(row["storage_path"])
+            native_context = (
+                attachment.representation == "rich"
+                and str(row["extension"]).lower() in RICH_UPLOAD_EXTENSIONS
+                and original_path.exists()
+                and int(row["byte_count"]) <= config.uploads.native_file_max_size_bytes
+            )
             content_path = upload_content_path(row)
-            if content_path is None or not content_path.exists():
+            if (content_path is None or not content_path.exists()) and not native_context:
                 raise UploadError(
                     f"Upload is not convertible for run context: {row['original_filename']}",
                     status_code=422,
                 )
-            content_sha = sha256_file(content_path)
-            text = content_path.read_text(encoding="utf-8", errors="replace")
-            context_chars = min(len(text), config.uploads.context_char_limit)
+            if content_path is not None and content_path.exists():
+                content_sha = sha256_file(content_path)
+                text = content_path.read_text(encoding="utf-8", errors="replace")
+                context_chars = min(len(text), config.uploads.context_char_limit)
+            else:
+                content_sha = None
+                context_chars = 0
         else:
             content_path = upload_content_path(row)
             content_sha = sha256_file(content_path) if content_path and content_path.exists() else None
             context_chars = 0
+            original_path = Path(row["storage_path"])
+            native_context = False
         records.append(
             {
                 "upload_id": upload_id,
@@ -459,9 +481,13 @@ async def attachment_records_for_prompt(
                 "included": included,
                 "byte_count": int(row["byte_count"]),
                 "sha256": row["sha256"],
+                "original_path": str(original_path),
                 "content_path": str(content_path) if content_path else None,
                 "content_sha256": content_sha,
                 "context_char_count": context_chars,
+                "mime_type": _content_mime_type(row),
+                "extension": row["extension"],
+                "native_context": native_context,
             }
         )
     return records
@@ -488,26 +514,54 @@ async def run_attachment_context(
     for row in rows:
         included = bool(row["included"])
         content_path = Path(row["content_path"]) if row.get("content_path") else None
-        missing = included and (content_path is None or not content_path.exists())
+        native_context = bool(row.get("native_context"))
+        missing = (
+            included
+            and not native_context
+            and (content_path is None or not content_path.exists())
+        )
         text = ""
+        fallback_text = ""
         if included and not missing and remaining > 0:
-            text = content_path.read_text(encoding="utf-8", errors="replace")
-            text = text[:remaining]
-            remaining -= len(text)
+            if content_path is not None and content_path.exists():
+                text = content_path.read_text(encoding="utf-8", errors="replace")
+                text = text[:remaining]
+                fallback_text = text
+                remaining -= len(text)
+        original_path = Path(row["original_path"]) if row.get("original_path") else None
+        native_missing = (
+            included
+            and native_context
+            and (original_path is None or not original_path.exists())
+        )
         item = {
             "path": f"upload:{row['upload_id'] or row['id']}",
             "mode": "upload_attachment",
-            "included": included and not missing and bool(text),
-            "missing": missing,
+            "included": included and not missing and not native_missing and (
+                bool(text) or native_context
+            ),
+            "missing": missing or native_missing,
             "byte_count": row["byte_count"],
             "sha256": row["content_sha256"] or row["sha256"],
             "title": row["original_filename"],
             "upload_id": row["upload_id"],
             "representation": row["representation"],
+            "native_context": native_context,
             "context_char_count": len(text),
         }
         items.append(item)
-        if item["included"]:
+        if item["included"] and native_context and original_path is not None:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": _native_attachment_content_parts(
+                        row,
+                        original_path,
+                        fallback_text,
+                    ),
+                }
+            )
+        elif item["included"]:
             messages.append(
                 {
                     "role": "system",
@@ -615,6 +669,43 @@ def _attachment_context_message(row: dict[str, Any], text: str) -> str:
         f"Metadata: {json.dumps(header, sort_keys=True)}\n\n"
         f"{text}"
     )
+
+
+def _native_attachment_content_parts(
+    row: dict[str, Any],
+    original_path: Path,
+    fallback_text: str,
+) -> list[dict[str, Any]]:
+    header = {
+        "upload_id": row["upload_id"],
+        "filename": row["original_filename"],
+        "representation": row["representation"],
+        "sha256": row["sha256"],
+        "bytes": row["byte_count"],
+        "mime_type": row.get("mime_type"),
+    }
+    return [
+        {
+            "type": "text",
+            "text": (
+                "DELAMAIN upload attachment. Use the attached rich source file as the "
+                "primary document. If this model route cannot inspect native files, use "
+                "the fallback extracted text in the file part metadata.\n"
+                f"Metadata: {json.dumps(header, sort_keys=True)}"
+            ),
+        },
+        {
+            "type": "delamain_upload_file",
+            "file": {
+                "filename": row["original_filename"],
+                "path": str(original_path),
+                "mime_type": row.get("mime_type") or "application/octet-stream",
+                "sha256": row["sha256"],
+                "byte_count": int(row["byte_count"]),
+                "fallback_text": fallback_text,
+            },
+        },
+    ]
 
 
 def _runtime_paths(config: AppConfig) -> RuntimePaths:

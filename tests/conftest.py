@@ -82,6 +82,7 @@ def test_config(tmp_path: Path) -> AppConfig:
         uploads=UploadsConfig(
             storage_path=tmp_path / "uploads",
             max_size_bytes=100 * 1024 * 1024,
+            native_file_max_size_bytes=25 * 1024 * 1024,
             preview_char_limit=12000,
             context_char_limit=60000,
         ),

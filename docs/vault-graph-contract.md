@@ -68,7 +68,7 @@ Fresh records can add `generated_tags`, `note_type`, `generated_summary`, `summa
 
 Workspace documents use the existing `delamain_ref` parser and bundle manifests. Raw rich documents are never prompt payloads for vault context; context reads use converted `document.md`.
 
-Upload intake is a separate temporary lane. Browser uploads are stored outside the vault, Sensitive vault, and Syncthing-backed `llm-workspace`; they do not become graph nodes and are not indexed until the user promotes them to `llm-workspace/reference` or `llm-workspace/syllabi`. Prompt attachments from intake are explicit per-run context and use bounded extracted/converted text while preserving the original rich file for download, promotion, or deletion.
+Upload intake is a separate temporary lane. Browser uploads are stored outside the vault, Sensitive vault, and Syncthing-backed `llm-workspace`; they do not become graph nodes and are not indexed until the user promotes them to `llm-workspace/reference` or `llm-workspace/syllabi`. Prompt attachments from intake are explicit per-run context. In `rich` mode, the original file is passed to LiteLLM as a provider-native file part when the active route supports it, with extracted text as fallback; in `converted` mode, only bounded extracted/converted text is sent.
 
 ## Planned API Surface
 

@@ -36,5 +36,6 @@ maintenance:
 uploads:
   storage_path: "/home/danielju/.local/share/delamain/uploads"
   max_size_bytes: 104857600
+  native_file_max_size_bytes: 26214400
   preview_char_limit: 12000
   context_char_limit: 60000
