@@ -257,6 +257,7 @@ Request body:
 | `model_route` | string or null | null | Override model route for this run |
 | `incognito_route` | boolean or null | null | Override incognito for this run |
 | `selected_context_paths` | string[] or null | null | Explicit composer-tray vault/workspace context paths to include for this run |
+| `attachments` | array or null | null | Uploaded intake documents to attach to this run |
 
 Response (returns immediately, run executes in background):
 
@@ -278,7 +279,84 @@ Ordering guarantee: the backend persists the user message and run before returni
 
 Only explicit selected/pinned composer-tray items should be sent in `selected_context_paths`. Draft preview suggestions are advisory until the user pins/selects them.
 
-### MessageOut Shape
+Uploaded attachments are also explicit run context. The browser uploads files immediately to backend-managed temporary storage, then sends attachment references with the prompt:
+
+```json
+{
+  "attachments": [
+    { "upload_id": "upl_...", "include": true, "representation": "converted" }
+  ]
+}
+```
+
+`representation` is `"rich"` or `"converted"` for UI state. The current model path receives bounded extracted/converted text, not native provider-side file attachments. The original rich file remains stored intact until deleted or promoted.
+
+## Upload Intake
+
+Upload intake is for temporary documents from `term.danielju.com`, phones, WinPC, or the MacBook. Storage is backend-local and must remain outside the Obsidian vault, Sensitive vault, and Syncthing-backed `llm-workspace` until the user explicitly promotes an upload.
+
+Supported upload extensions are `.pdf`, `.docx`, `.rtf`, `.odt`, `.txt`, and `.md`. Archive/executable-like extensions are rejected. The backend computes sha256, stores the original file, and creates a bounded text/markdown extraction for preview and model context. No upload content is sent to a model until the upload is included in a prompt.
+
+### POST /api/uploads
+
+Multipart form upload with one part named `file`.
+
+Response: `UploadOut`
+
+### GET /api/uploads
+
+Returns pending and promoted intake records.
+
+```json
+{
+  "uploads": [
+    {
+      "id": "upl_...",
+      "original_filename": "paper.pdf",
+      "filename": "paper.pdf",
+      "mime_type": "application/pdf",
+      "byte_count": 12345,
+      "size": 12345,
+      "sha256": "...",
+      "status": "converted",
+      "conversion_status": "fresh",
+      "preview_status": "preview_ready",
+      "promoted": false,
+      "promoted_path": null,
+      "created_at": "...",
+      "updated_at": "..."
+    }
+  ]
+}
+```
+
+### GET /api/uploads/{upload_id}/preview
+
+Returns bounded extracted text/markdown preview fields. `content`, `text_preview`, `markdown_preview`, and `extracted_text` are additive aliases for current frontend compatibility.
+
+### POST /api/uploads/{upload_id}/convert
+
+Forces extraction/conversion refresh and returns `UploadOut`.
+
+### POST /api/uploads/{upload_id}/promote
+
+Request:
+
+```json
+{ "category": "reference" }
+```
+
+`category` is `"reference"` or `"syllabi"`. Promotion copies the original into the matching `llm-workspace` category, creates/refreshes the workspace document bundle with `document.md`, and rebuilds the vault index.
+
+### DELETE /api/uploads/{upload_id}
+
+Deletes one upload and its temporary storage.
+
+### POST /api/uploads/clear
+
+Deletes all unpromoted uploads and temporary storage.
+
+## MessageOut Shape
 
 ```json
 {
@@ -1193,9 +1271,22 @@ Response:
   "default": "github_copilot/gpt-5.4-mini",
   "fallback_high_volume": "github_copilot/gpt-5-mini",
   "fallback_cheap": "github_copilot/claude-haiku-4.5",
-  "paid_fallback": "openrouter/deepseek/deepseek-v3.2"
+  "paid_fallback": "openrouter/deepseek/deepseek-v3.2",
+  "routes": [
+    {
+      "id": "github_copilot/gpt-5.4-mini",
+      "label": "gpt-5.4-mini",
+      "provider": "github_copilot",
+      "model": "gpt-5.4-mini",
+      "family": "responses",
+      "role": "default",
+      "description": "Default route"
+    }
+  ]
 }
 ```
+
+The chat UI may persist a conversation route with `PATCH /api/conversations/{id}` `model_route`. Supported slash commands are frontend-owned conveniences over existing APIs: `/model`, `/model <route-or-alias>`, `/escalate model|paid [route]`, `/escalate worker`, `/worker <type> [name]`, and `/monitor <worker id-or-name>`. LiteLLM owns model-route execution and fallback; tmux/SSH workers are a separate explicit user bridge, not an automatic LiteLLM escalation path.
 
 ### GET /api/settings/budget
 

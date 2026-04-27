@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Menu, Settings, Activity, Cpu, Pencil, X, DollarSign, Network } from 'lucide-react'
+import { Menu, Settings, Activity, Cpu, Pencil, X, DollarSign, Network, UploadCloud } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from './Sidebar'
 import { ChatPane } from './ChatPane'
@@ -22,6 +22,7 @@ import { SensitiveLockBadge } from './SensitiveLockBadge'
 import { AuditTrail } from './AuditTrail'
 import { VaultPanel } from './VaultPanel'
 import { ComposerContextTray } from './ComposerContextTray'
+import { UploadsPanel } from './UploadsPanel'
 import { useDelamainBackend } from '@/hooks/useDelamainBackend'
 import { api } from '@/lib/api'
 import type { ContextFile } from '@/lib/types'
@@ -356,7 +357,11 @@ export function ChatLayout() {
                 <Pencil size={11} className="text-[#555555] opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
               </button>
             )}
-            <ModelBadge model={state.model} />
+            <ModelBadge
+              model={state.model}
+              options={state.modelOptions}
+              onChange={handleChangeModel}
+            />
             <RunStatusPill status={activeConversation?.runStatus} />
             <RunControls
               status={activeConversation?.runStatus}
@@ -428,6 +433,17 @@ export function ChatLayout() {
               title="Vault graph"
             >
               <Network size={14} />
+            </button>
+
+            <button
+              onClick={() => openPanel('uploads')}
+              className={cn('relative text-[#555555] hover:text-white transition-colors p-1.5 rounded')}
+              style={state.rightPanel === 'uploads' ? { color: 'var(--accent-green)' } : {}}
+              aria-label="Uploads panel"
+              aria-pressed={state.rightPanel === 'uploads'}
+              title="Uploads"
+            >
+              <UploadCloud size={14} />
             </button>
 
             <button
@@ -562,6 +578,22 @@ export function ChatLayout() {
                 pinnedItems={state.vaultContextItems ?? []}
                 onPinToContext={handleAddVaultContext}
               />
+            </div>
+          </aside>
+        </>
+      )}
+
+      {state.rightPanel === 'uploads' && (
+        <>
+          <div className="fixed inset-0 z-20 bg-black/60 xl:hidden" onClick={closePanel} aria-hidden="true" />
+          <aside
+            className="relative flex-shrink-0 flex flex-col h-full bg-[#080808] border-l border-white/[0.06] z-30"
+            style={{ width: rightPanelResize.width }}
+          >
+            <DragHandle onMouseDown={rightPanelResize.onMouseDown} side="left" />
+            <PanelHeader title="Uploads" onClose={closePanel} />
+            <div className="flex-1 overflow-hidden">
+              <UploadsPanel />
             </div>
           </aside>
         </>

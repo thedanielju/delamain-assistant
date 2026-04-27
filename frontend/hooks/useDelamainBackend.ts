@@ -35,6 +35,7 @@ import type {
   Conversation,
   ContextFile,
   Permission,
+  PromptAttachment,
   RightPanelId,
   RunStatus,
   SubscriptionProvider,
@@ -215,6 +216,36 @@ function vaultContextItemFromNote(note: VaultNoteDetail): VaultContextItem {
     pinned: true,
     excluded: note.excluded,
   }
+}
+
+function resolveModelRoute(input: string, modelOptions: string[]): string | null {
+  const needle = input.trim().toLowerCase()
+  if (!needle) return null
+  const aliases: Record<string, (route: string) => boolean> = {
+    default: () => false,
+    mini: (route) => route.toLowerCase().includes('gpt-5-mini'),
+    high: (route) => route.toLowerCase().includes('gpt-5.4-mini'),
+    cheap: (route) => route.toLowerCase().includes('haiku'),
+    task: (route) => route.toLowerCase().includes('haiku'),
+    haiku: (route) => route.toLowerCase().includes('haiku'),
+    paid: (route) => route.toLowerCase().includes('openrouter'),
+    deepseek: (route) => route.toLowerCase().includes('deepseek'),
+    openrouter: (route) => route.toLowerCase().includes('openrouter'),
+  }
+  if (needle === 'default') return modelOptions[0] ?? null
+  for (const route of modelOptions) {
+    if (route.toLowerCase() === needle) return route
+  }
+  for (const route of modelOptions) {
+    if (route.toLowerCase().includes(needle)) return route
+  }
+  const matcher = aliases[needle]
+  return matcher ? modelOptions.find(matcher) ?? null : null
+}
+
+function modelChoicesText(modelOptions: string[]): string {
+  if (modelOptions.length === 0) return 'No configured model routes are available.'
+  return `Available routes: ${modelOptions.join(', ')}. Use /model <route-or-alias>. Aliases: high, mini, cheap, paid.`
 }
 
 export function useDelamainBackend() {
@@ -977,9 +1008,174 @@ export function useDelamainBackend() {
   }, [connected, handleBackendError, state])
 
   const handleSend = useCallback(
-    async (content: string) => {
+    async (content: string, attachments: PromptAttachment[] = []) => {
       const convoId = activeConversationId
-      if (!convoId) return
+      if (!convoId) return false
+      const slash = content.trim()
+      if (slash.startsWith('/') && attachments.length === 0) {
+        const [commandRaw, ...args] = slash.slice(1).split(/\s+/)
+        const command = commandRaw.toLowerCase()
+        if (command === 'model') {
+          const requested = args.join(' ')
+          if (!requested) {
+            setState((s) => ({ ...s, rightPanel: 'settings' }))
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.model',
+              detail: modelChoicesText(state.modelOptions),
+            })
+            return true
+          }
+          const route = resolveModelRoute(requested, state.modelOptions)
+          if (!route) {
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.model_failed',
+              detail: `Unknown model route or alias: ${requested}. ${modelChoicesText(state.modelOptions)}`,
+            })
+            return false
+          }
+          setState((s) => ({
+            ...s,
+            model: route,
+            conversations: s.conversations.map((c) =>
+              c.id === convoId ? { ...c, modelRoute: route } : c
+            ),
+          }))
+          if (connected) {
+            try {
+              await api.patchConversation(convoId, { model_route: route })
+            } catch (err) {
+              handleBackendError(err)
+            }
+          }
+          appendAudit({
+            conversationId: convoId,
+            event: 'slash.model',
+            detail: `Active route set to ${route}`,
+          })
+          return true
+        }
+        if (command === 'escalate') {
+          const mode = (args[0] || 'choices').toLowerCase()
+          if (mode === 'model' || mode === 'paid') {
+            const route =
+              resolveModelRoute(args.slice(1).join(' ') || 'paid', state.modelOptions) ??
+              state.modelOptions[state.modelOptions.length - 1]
+            if (!route) return false
+            setState((s) => ({
+              ...s,
+              model: route,
+              conversations: s.conversations.map((c) =>
+                c.id === convoId ? { ...c, modelRoute: route } : c
+              ),
+            }))
+            if (connected) {
+              try {
+                await api.patchConversation(convoId, { model_route: route })
+              } catch (err) {
+                handleBackendError(err)
+              }
+            }
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.escalate_model',
+              detail: `Escalated active route to ${route}`,
+            })
+            return true
+          }
+          if (mode === 'worker' || mode === 'workers') {
+            setState((s) => ({ ...s, rightPanel: 'workers' }))
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.escalate_worker',
+              detail: 'Opened worker escalation choices. Use /worker <type> [name] to start a user-confirmed session.',
+            })
+            return true
+          }
+          setState((s) => ({ ...s, rightPanel: 'settings' }))
+          appendAudit({
+            conversationId: convoId,
+            event: 'slash.escalate',
+            detail: 'Choices: /escalate model, /escalate worker, /worker <type> [name].',
+          })
+          return true
+        }
+        if (command === 'worker') {
+          const workerTypeId = args[0]
+          const name = args.slice(1).join(' ').trim() || undefined
+          if (!workerTypeId) {
+            setState((s) => ({ ...s, rightPanel: 'workers' }))
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.worker',
+              detail: 'Opened Workers panel. Use /worker <type> [name] to start a session.',
+            })
+            return true
+          }
+          try {
+            if (!connected) throw new Error('Backend is offline')
+            const created = await api.createWorker({
+              worker_type: workerTypeId,
+              name,
+              conversation_id: convoId,
+            })
+            setState((s) => ({
+              ...s,
+              rightPanel: 'workers',
+              workers: [toUIWorker(created), ...s.workers],
+            }))
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.worker_started',
+              detail: `Started ${workerTypeId}${name ? ` as ${name}` : ''}.`,
+            })
+            return true
+          } catch (err) {
+            handleBackendError(err)
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.worker_failed',
+              detail: err instanceof Error ? err.message : `Failed to start ${workerTypeId}`,
+            })
+            return false
+          }
+        }
+        if (command === 'monitor') {
+          const target = args.join(' ').trim()
+          const worker =
+            state.workers.find((w) => w.id === target || w.name.toLowerCase() === target.toLowerCase()) ??
+            state.workers.find((w) => w.name.toLowerCase().includes(target.toLowerCase()))
+          if (!target || !worker) {
+            setState((s) => ({ ...s, rightPanel: 'workers' }))
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.monitor_failed',
+              detail: target ? `Worker not found: ${target}` : 'Opened Workers panel. Use /monitor <worker id or name>.',
+            })
+            return false
+          }
+          try {
+            const output = await api.getWorkerOutput(worker.id, 200)
+            setState((s) => ({
+              ...s,
+              rightPanel: 'workers',
+              workers: s.workers.map((w) =>
+                w.id === worker.id ? { ...w, output: output.output } : w
+              ),
+            }))
+            appendAudit({
+              conversationId: convoId,
+              event: 'slash.monitor',
+              detail: `Captured latest output for ${worker.name}.`,
+            })
+            return true
+          } catch (err) {
+            handleBackendError(err)
+            return false
+          }
+        }
+      }
 
       const userMsg: ChatMessage = {
         id: makeId(),
@@ -995,7 +1191,7 @@ export function useDelamainBackend() {
         ),
       }))
 
-      if (!connected) return
+      if (!connected) return true
 
       try {
         const resp = await api.submitPrompt(convoId, {
@@ -1006,6 +1202,7 @@ export function useDelamainBackend() {
           selected_context_paths: (state.vaultContextItems ?? [])
             .filter((item) => item.pinned && !item.excluded)
             .map((item) => item.path),
+          attachments,
         })
         setState((s) => ({
           ...s,
@@ -1021,6 +1218,7 @@ export function useDelamainBackend() {
               : c
           ),
         }))
+        return true
       } catch (err) {
         handleBackendError(err)
         setState((s) => ({
@@ -1031,9 +1229,10 @@ export function useDelamainBackend() {
               : c
           ),
         }))
+        return false
       }
     },
-    [activeConversationId, connected, handleBackendError, state]
+    [activeConversationId, appendAudit, connected, handleBackendError, state]
   )
 
   const handlePreviewVaultContext = useCallback(
@@ -1426,9 +1625,32 @@ export function useDelamainBackend() {
     }
   }, [connected, handleBackendError])
 
-  const handleChangeModel = useCallback((model: string) => {
-    setState((s) => ({ ...s, model }))
-  }, [])
+  const handleChangeModel = useCallback(
+    async (model: string) => {
+      const prev = state.model
+      setState((s) => ({
+        ...s,
+        model,
+        conversations: s.conversations.map((c) =>
+          c.id === activeConversationId ? { ...c, modelRoute: model } : c
+        ),
+      }))
+      if (!connected || !activeConversationId) return
+      try {
+        await api.patchConversation(activeConversationId, { model_route: model })
+      } catch (err) {
+        handleBackendError(err)
+        setState((s) => ({
+          ...s,
+          model: prev,
+          conversations: s.conversations.map((c) =>
+            c.id === activeConversationId ? { ...c, modelRoute: prev } : c
+          ),
+        }))
+      }
+    },
+    [activeConversationId, connected, handleBackendError, state.model]
+  )
 
   const handleChangeDefaultModel = useCallback(
     async (model: string) => {

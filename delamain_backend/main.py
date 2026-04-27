@@ -15,6 +15,7 @@ from delamain_backend.events import EventBus
 from delamain_backend.maintenance import run_startup_cleanup
 from delamain_backend.security.auth import CloudflareAccessValidator, install_auth_middleware
 from delamain_backend.structured_logging import configure_logging, install_request_logging
+from delamain_backend.uploads import validate_upload_storage_root
 from delamain_backend.vault_heartbeat import VaultIndexHeartbeat
 from delamain_backend.workers import WorkerManager, default_worker_registry
 
@@ -34,6 +35,7 @@ def create_app(config: AppConfig | None = None, model_client: ModelClient | None
         loaded_config = config or load_config()
         configure_logging()
         assert_litellm_version_allowed()
+        validate_upload_storage_root(loaded_config)
         db = Database(loaded_config.database.path)
         await db.connect()
         await db.migrate()

@@ -72,6 +72,7 @@ Obsidian project docs:
 - production public ingress remains `term.danielju.com` with Cloudflare Access enforced
 - Obsidian `sensitivity` frontmatter remains a deterministic local privacy gate: `private` is never indexed/exposed, and `sensitive` is excluded while Sensitive is locked
 - Vault indexing must decide `sensitivity` from bounded frontmatter pre-scan before any body read; frontmatter is never sent to a model
+- Upload intake storage must stay outside the vault, Sensitive vault, and Syncthing-backed `llm-workspace`; uploads only enter the graph after explicit promotion
 
 ## Working Rules
 - Before editing, state intended scope and likely files touched.
@@ -92,6 +93,7 @@ Obsidian project docs:
 - Production backend service source is `/home/danielju/delamain/backend`; production frontend service source is `/home/danielju/delamain/frontend`.
 - `llm-workspace/bin` should contain wrapper scripts only. Helper implementation belongs in repo package `delamain_ref/`.
 - After helper behavior changes, install wrappers from `scripts/helper_wrappers/` and rebuild with `/home/danielju/llm-workspace/bin/delamain-vault-index build --json`.
+- Upload intake is backend-owned under `delamain_backend/uploads.py` and API-owned under `delamain_backend/api/uploads.py`. Browser uploads are temporary originals plus extracted context; promotion copies into repo-helper-managed workspace bundles.
 - If deployment must be manual, keep backend repo sync, frontend service sync, helper wrapper install, vault-index rebuild, frontend build, and backend/frontend restarts as distinct steps.
 
 ## Current Development Posture

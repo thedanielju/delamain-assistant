@@ -13,6 +13,7 @@ from . import (
     streams,
     syncthing,
     usage,
+    uploads,
     vault,
     workers,
 )
@@ -30,5 +31,6 @@ api_router.include_router(settings.router)
 api_router.include_router(streams.router)
 api_router.include_router(syncthing.router)
 api_router.include_router(usage.router)
+api_router.include_router(uploads.router)
 api_router.include_router(vault.router)
 api_router.include_router(workers.router)

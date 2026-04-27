@@ -66,7 +66,9 @@ llm-workspace/vault-index/generated/metadata.json
 
 Fresh records can add `generated_tags`, `note_type`, `generated_summary`, `summary_status`, `generated_metadata_state`, and `stale_labels` to graph nodes. Stale records are not used for retrieval scoring or oversized-note summary payloads.
 
-Workspace documents use the existing `delamain_ref` parser and bundle manifests. Raw rich documents are never prompt payloads; context reads use converted `document.md`.
+Workspace documents use the existing `delamain_ref` parser and bundle manifests. Raw rich documents are never prompt payloads for vault context; context reads use converted `document.md`.
+
+Upload intake is a separate temporary lane. Browser uploads are stored outside the vault, Sensitive vault, and Syncthing-backed `llm-workspace`; they do not become graph nodes and are not indexed until the user promotes them to `llm-workspace/reference` or `llm-workspace/syllabi`. Prompt attachments from intake are explicit per-run context and use bounded extracted/converted text while preserving the original rich file for download, promotion, or deletion.
 
 ## Planned API Surface
 

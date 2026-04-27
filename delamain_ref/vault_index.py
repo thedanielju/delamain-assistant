@@ -694,6 +694,8 @@ def _auto_ingest_workspace_docs(paths: RuntimePaths) -> dict[str, Any]:
         for source in sorted(root.iterdir(), key=lambda p: p.name.lower()):
             if not source.is_file() or source.suffix.lower() not in SUPPORTED_INGEST_EXTENSIONS:
                 continue
+            if source.name.startswith("_"):
+                continue
             if "sync-conflict" in source.name.lower():
                 warnings.append(f"Skipped conflicted document: {source.name}")
                 continue

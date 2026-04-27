@@ -97,6 +97,14 @@ class MaintenanceConfig:
 
 
 @dataclass(frozen=True)
+class UploadsConfig:
+    storage_path: Path
+    max_size_bytes: int
+    preview_char_limit: int
+    context_char_limit: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerConfig
     database: DatabaseConfig
@@ -107,6 +115,7 @@ class AppConfig:
     runtime: RuntimeConfig
     auth: AuthConfig
     maintenance: MaintenanceConfig
+    uploads: UploadsConfig
 
 
 def _project_root() -> Path:
@@ -148,6 +157,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     runtime = raw.get("runtime", {})
     auth = raw.get("auth", {})
     maintenance = raw.get("maintenance", {})
+    uploads = raw.get("uploads", {})
 
     db_path = Path(os.environ.get("DELAMAIN_DB_PATH", database["path"])).expanduser()
     enable_model_calls = _as_bool(
@@ -231,6 +241,35 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                 os.environ.get(
                     "DELAMAIN_CONTEXT_BACKUP_RETENTION_DAYS",
                     maintenance.get("context_backup_retention_days", 30),
+                )
+            ),
+        ),
+        uploads=UploadsConfig(
+            storage_path=Path(
+                os.environ.get(
+                    "DELAMAIN_UPLOAD_STORAGE_PATH",
+                    uploads.get(
+                        "storage_path",
+                        "/home/danielju/.local/share/delamain/uploads",
+                    ),
+                )
+            ).expanduser(),
+            max_size_bytes=int(
+                os.environ.get(
+                    "DELAMAIN_UPLOAD_MAX_SIZE_BYTES",
+                    uploads.get("max_size_bytes", 100 * 1024 * 1024),
+                )
+            ),
+            preview_char_limit=int(
+                os.environ.get(
+                    "DELAMAIN_UPLOAD_PREVIEW_CHAR_LIMIT",
+                    uploads.get("preview_char_limit", 12000),
+                )
+            ),
+            context_char_limit=int(
+                os.environ.get(
+                    "DELAMAIN_UPLOAD_CONTEXT_CHAR_LIMIT",
+                    uploads.get("context_char_limit", 60000),
                 )
             ),
         ),

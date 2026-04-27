@@ -75,11 +75,13 @@ fi
 log "Backend/helper compile and focused tests"
 cd "$REMOTE_BACKEND"
 "$BACKEND_PY" -m py_compile \
+  delamain_backend/uploads.py \
+  delamain_backend/api/uploads.py \
   delamain_backend/security/vault.py \
   delamain_backend/vault_generated.py \
   delamain_backend/api/vault.py \
   delamain_ref/vault_index.py
-"$BACKEND_PY" -m pytest -q tests/test_delamain_ref.py tests/test_vault_api.py -k "frontmatter or sensitivity"
+"$BACKEND_PY" -m pytest -q tests/test_uploads.py tests/test_delamain_ref.py tests/test_vault_api.py -k "frontmatter or sensitivity or upload"
 
 log "Rebuild vault index through repo-backed wrapper"
 "${BIN_DIR}/delamain-vault-index" build --json

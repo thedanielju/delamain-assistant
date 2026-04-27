@@ -10,6 +10,8 @@ from delamain_backend.config import AppConfig
 from delamain_backend.db import Database
 from delamain_backend.events import EventBus
 from delamain_backend.schemas import ConversationCreate, ConversationUpdate, PromptSubmit
+from delamain_backend.settings_store import allowed_model_routes
+from delamain_backend.uploads import UploadError, attachment_records_for_prompt
 
 router = APIRouter(tags=["conversations"])
 
@@ -30,6 +32,8 @@ async def create_conversation(
 ):
     conversation_id = new_id("conv")
     model_route = payload.model_route
+    if model_route is not None and model_route not in allowed_model_routes(config):
+        raise HTTPException(status_code=400, detail="Unsupported model_route")
     if payload.folder_id is not None:
         await _require_folder(db, payload.folder_id)
     await db.execute(
@@ -66,6 +70,7 @@ async def get_conversation(conversation_id: str, db: Database = Depends(get_db))
 async def update_conversation(
     conversation_id: str,
     payload: ConversationUpdate,
+    config: AppConfig = Depends(get_config),
     db: Database = Depends(get_db),
 ):
     row = await db.fetchone("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
@@ -79,16 +84,24 @@ async def update_conversation(
     folder_id = payload.folder_id if "folder_id" in payload_fields else row.get("folder_id")
     if folder_id is not None:
         await _require_folder(db, folder_id)
+    model_route = payload.model_route if "model_route" in payload_fields else row["model_route"]
+    if model_route is not None and model_route not in allowed_model_routes(config):
+        raise HTTPException(status_code=400, detail="Unsupported model_route")
+    incognito_route = row["incognito_route"]
+    if "incognito_route" in payload_fields:
+        incognito_route = 1 if payload.incognito_route else 0
     await db.execute(
         """
         UPDATE conversations
         SET title = ?,
             archived = ?,
             folder_id = ?,
+            model_route = ?,
+            incognito_route = ?,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ?
         """,
-        (title, archived, folder_id, conversation_id),
+        (title, archived, folder_id, model_route, incognito_route, conversation_id),
     )
     updated = await db.fetchone("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
     return _conversation_out(updated)
@@ -194,6 +207,14 @@ async def submit_prompt(
         generated_title = _title_from_prompt(payload.content)
         if generated_title == "New conversation":
             generated_title = None
+    try:
+        upload_attachments = await attachment_records_for_prompt(
+            db,
+            config,
+            payload.attachments or [],
+        )
+    except UploadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     statements = [
         (
             """
@@ -257,6 +278,31 @@ async def submit_prompt(
                 VALUES (?, ?, ?, 'vault_context_tray', 'Selected in composer tray')
                 """,
                 (new_id("prctx"), run_id, path),
+            )
+        )
+    for attachment in upload_attachments:
+        statements.append(
+            (
+                """
+                INSERT INTO run_upload_attachments(
+                    id, run_id, upload_id, original_filename, representation, included,
+                    byte_count, sha256, content_path, content_sha256, context_char_count
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("rupl"),
+                    run_id,
+                    attachment["upload_id"],
+                    attachment["original_filename"],
+                    attachment["representation"],
+                    1 if attachment["included"] else 0,
+                    attachment["byte_count"],
+                    attachment["sha256"],
+                    attachment["content_path"],
+                    attachment["content_sha256"],
+                    attachment["context_char_count"],
+                ),
             )
         )
     await db.execute_transaction(statements)

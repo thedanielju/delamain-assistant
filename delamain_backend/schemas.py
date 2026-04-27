@@ -28,6 +28,8 @@ class ConversationUpdate(BaseModel):
     title: str | None = None
     archived: bool | None = None
     folder_id: str | None = None
+    model_route: str | None = None
+    incognito_route: bool | None = None
 
 
 class PromptSubmit(BaseModel):
@@ -36,6 +38,13 @@ class PromptSubmit(BaseModel):
     model_route: str | None = None
     incognito_route: bool | None = None
     selected_context_paths: list[str] | None = Field(default=None, max_length=12)
+    attachments: list["PromptAttachment"] | None = Field(default=None, max_length=8)
+
+
+class PromptAttachment(BaseModel):
+    upload_id: str = Field(min_length=1)
+    include: bool = True
+    representation: Literal["rich", "converted"] = "converted"
 
 
 class PromptSubmitResponse(BaseModel):
@@ -141,6 +150,10 @@ class PermissionResolve(BaseModel):
     decision: str
     note: str | None = None
     resolver: str | None = None
+
+
+class UploadPromoteRequest(BaseModel):
+    category: Literal["reference", "syllabi"]
 
 
 class ConversationOut(BaseModel):

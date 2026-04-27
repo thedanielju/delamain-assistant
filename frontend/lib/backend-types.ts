@@ -65,6 +65,78 @@ export interface SubmitPromptResponse {
   status: BackendRunStatus
 }
 
+// ── Upload intake ───────────────────────────────────────────────────────────
+
+export type BackendUploadStatus =
+  | 'pending'
+  | 'uploaded'
+  | 'preview_ready'
+  | 'converted'
+  | 'promoted'
+  | 'expired'
+  | 'failed'
+  | string
+
+export type BackendUploadRepresentation = 'rich' | 'converted'
+
+export type BackendUploadPromotionCategory = 'reference' | 'syllabi'
+
+export interface BackendUpload {
+  id: string
+  filename?: string
+  name?: string
+  original_filename?: string
+  content_type?: string | null
+  mime_type?: string | null
+  size?: number | null
+  byte_count?: number | null
+  status: BackendUploadStatus
+  preview_status?: BackendUploadStatus | null
+  conversion_status?: BackendUploadStatus | null
+  created_at?: string
+  updated_at?: string
+  expires_at?: string | null
+  error_message?: string | null
+  representation?: BackendUploadRepresentation | string | null
+  category?: BackendUploadPromotionCategory | string | null
+  promoted_path?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface BackendUploadsResponse {
+  uploads: BackendUpload[]
+}
+
+export interface BackendUploadPreview {
+  upload_id?: string
+  status?: BackendUploadStatus
+  filename?: string
+  content_type?: string | null
+  size?: number | null
+  text_preview?: string | null
+  markdown_preview?: string | null
+  extracted_text?: string | null
+  token_estimate?: number | null
+  page_count?: number | null
+  metadata?: Record<string, unknown>
+  error_message?: string | null
+}
+
+export interface BackendUploadPromotionResult {
+  upload?: BackendUpload
+  result?: string
+  category?: BackendUploadPromotionCategory | string
+  path?: string | null
+  promoted_path?: string | null
+  [key: string]: unknown
+}
+
+export interface BackendPromptAttachment {
+  upload_id: string
+  include: boolean
+  representation: BackendUploadRepresentation
+}
+
 export interface BackendCopilotBudget {
   period: string
   used_premium_requests: number
@@ -141,7 +213,15 @@ export interface BackendModelRoutes {
   fallback_high_volume?: string
   fallback_cheap?: string
   paid_fallback?: string
-  [route: string]: string | undefined
+  routes?: Array<{
+    id: string
+    label: string
+    provider: string
+    model: string
+    family: 'responses' | 'chat_completions' | string
+    role: 'default' | 'fallback_high_volume' | 'fallback_cheap' | 'paid_fallback' | string
+    description: string
+  }>
 }
 
 export type BackendApprovalPolicy = 'auto' | 'confirm'

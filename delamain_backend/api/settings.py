@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from delamain_backend.agent.router import api_family_for_route
 from delamain_backend.api.audit import audit_event
 from delamain_backend.api.deps import get_bus, get_config, get_db
 from delamain_backend.budget import copilot_budget_status
@@ -57,11 +58,64 @@ async def patch_settings(
 
 @router.get("/settings/models")
 async def get_model_settings(config: AppConfig = Depends(get_config)):
+    routes = [
+        _model_route_payload(
+            config.models.default,
+            label="Default",
+            role="default",
+            description="Primary chat route used when no conversation or prompt override is set.",
+        ),
+        _model_route_payload(
+            config.models.fallback_high_volume,
+            label="High volume",
+            role="fallback_high_volume",
+            description="First fallback route for broader or higher-volume chat work.",
+        ),
+        _model_route_payload(
+            config.models.fallback_cheap,
+            label="Cheap/task",
+            role="fallback_cheap",
+            description="Lower-cost route also used as the default task model.",
+        ),
+        _model_route_payload(
+            config.models.paid_fallback,
+            label="Paid fallback",
+            role="paid_fallback",
+            description="Paid route used for explicit escalation and final fallback.",
+        ),
+    ]
+    deduped_routes = []
+    seen = set()
+    for route in routes:
+        if route["id"] in seen:
+            continue
+        seen.add(route["id"])
+        deduped_routes.append(route)
     return {
         "default": config.models.default,
         "fallback_high_volume": config.models.fallback_high_volume,
         "fallback_cheap": config.models.fallback_cheap,
         "paid_fallback": config.models.paid_fallback,
+        "routes": deduped_routes,
+    }
+
+
+def _model_route_payload(
+    route: str,
+    *,
+    label: str,
+    role: str,
+    description: str,
+) -> dict[str, str]:
+    provider, _, model = route.partition("/")
+    return {
+        "id": route,
+        "label": label,
+        "provider": provider or route,
+        "model": model or route,
+        "family": api_family_for_route(route),
+        "role": role,
+        "description": description,
     }
 
 

@@ -113,6 +113,45 @@ def test_persisted_model_default_used_for_new_runs(test_config):
         assert run["model_route"] == test_config.models.fallback_high_volume
 
 
+def test_conversation_model_route_can_be_persisted(test_config):
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        conversation = client.post("/api/conversations", json={}).json()
+        patched = client.patch(
+            f"/api/conversations/{conversation['id']}",
+            json={
+                "model_route": test_config.models.paid_fallback,
+                "incognito_route": True,
+            },
+        )
+        assert patched.status_code == 200
+        assert patched.json()["model_route"] == test_config.models.paid_fallback
+        assert patched.json()["incognito_route"] is True
+        run_id = client.post(
+            f"/api/conversations/{conversation['id']}/messages",
+            json={"content": "hello"},
+        ).json()["run_id"]
+        run = client.get(f"/api/runs/{run_id}").json()
+        assert run["model_route"] == test_config.models.paid_fallback
+        assert run["incognito_route"] is True
+
+
+def test_settings_models_includes_route_metadata(test_config):
+    app = create_app(test_config)
+    with TestClient(app) as client:
+        payload = client.get("/api/settings/models").json()
+    assert payload["default"] == test_config.models.default
+    route_ids = {route["id"] for route in payload["routes"]}
+    assert {
+        test_config.models.default,
+        test_config.models.fallback_high_volume,
+        test_config.models.fallback_cheap,
+        test_config.models.paid_fallback,
+    } <= route_ids
+    paid = next(route for route in payload["routes"] if route["id"] == test_config.models.paid_fallback)
+    assert paid["role"] == "paid_fallback"
+
+
 def _wait_for_run(client: TestClient, run_id: str) -> dict:
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:

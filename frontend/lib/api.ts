@@ -34,6 +34,7 @@ import type {
   BackendMessage,
   BackendModelRoutes,
   BackendPermission,
+  BackendPromptAttachment,
   BackendRun,
   BackendSettings,
   BackendSubscriptionSummary,
@@ -42,6 +43,11 @@ import type {
   BackendSyncthingResolveResponse,
   BackendSyncthingSummary,
   BackendTool,
+  BackendUpload,
+  BackendUploadPreview,
+  BackendUploadPromotionCategory,
+  BackendUploadPromotionResult,
+  BackendUploadsResponse,
   BackendUsageResponse,
   BackendWorker,
   BackendWorkerType,
@@ -103,7 +109,8 @@ async function request<T>(path: string, init: RequestInitExt = {}): Promise<T> {
   let res: Response
   try {
     const headers = new Headers(rest.headers)
-    if (rest.body != null && !headers.has('Content-Type')) {
+    const isFormData = typeof FormData !== 'undefined' && rest.body instanceof FormData
+    if (rest.body != null && !isFormData && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json')
     }
     res = await fetch(`${API_BASE}${path}`, {
@@ -183,7 +190,14 @@ export const api = {
   },
   patchConversation(
     id: string,
-    body: { title?: string | null; archived?: boolean | null; folder_id?: string | null }
+    body: {
+      title?: string | null
+      archived?: boolean | null
+      folder_id?: string | null
+      context_mode?: BackendContextMode | null
+      model_route?: string | null
+      incognito_route?: boolean | null
+    }
   ): Promise<BackendConversation> {
     return request<BackendConversation>(`/conversations/${id}`, {
       method: 'PATCH',
@@ -229,6 +243,7 @@ export const api = {
       model_route?: string | null
       incognito_route?: boolean | null
       selected_context_paths?: string[] | null
+      attachments?: BackendPromptAttachment[] | null
     }
   ): Promise<SubmitPromptResponse> {
     return request<SubmitPromptResponse>(
@@ -247,6 +262,45 @@ export const api = {
   },
   retryRun(runId: string): Promise<BackendRun> {
     return request<BackendRun>(`/runs/${runId}/retry`, { method: 'POST' })
+  },
+
+  // ── Upload intake ─────────────────────────────────────────────────────────
+  uploadFile(file: File): Promise<BackendUpload> {
+    const form = new FormData()
+    form.set('file', file)
+    return request<BackendUpload>('/uploads', {
+      method: 'POST',
+      body: form,
+    })
+  },
+  listUploads(): Promise<BackendUploadsResponse> {
+    return request<BackendUploadsResponse>('/uploads')
+  },
+  getUploadPreview(id: string): Promise<BackendUploadPreview> {
+    return request<BackendUploadPreview>(`/uploads/${encodeURIComponent(id)}/preview`)
+  },
+  convertUpload(id: string): Promise<BackendUpload> {
+    return request<BackendUpload>(`/uploads/${encodeURIComponent(id)}/convert`, {
+      method: 'POST',
+    })
+  },
+  promoteUpload(
+    id: string,
+    body: { category: BackendUploadPromotionCategory }
+  ): Promise<BackendUpload | BackendUploadPromotionResult> {
+    return request<BackendUpload | BackendUploadPromotionResult>(
+      `/uploads/${encodeURIComponent(id)}/promote`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    )
+  },
+  deleteUpload(id: string): Promise<void> {
+    return request<void>(`/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
+  clearUploads(): Promise<void | BackendUploadsResponse> {
+    return request<void | BackendUploadsResponse>('/uploads/clear', { method: 'POST' })
   },
 
   // ── Permissions ────────────────────────────────────────────────────────────

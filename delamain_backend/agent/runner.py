@@ -18,6 +18,7 @@ from delamain_backend.errors import DelamainError, SensitiveLocked, ToolPolicyDe
 from delamain_backend.events import EventBus
 from delamain_backend.settings_store import disabled_tools, tool_approval_policy
 from delamain_backend.tools import ToolExecutionContext, ToolRegistry, default_tool_registry
+from delamain_backend.uploads import run_attachment_context
 
 
 def new_id(prefix: str) -> str:
@@ -264,6 +265,14 @@ class RunManager:
                 selected_context_paths=selected_context_paths,
                 sensitive_unlocked=sensitive_unlocked,
             )
+            attachment_items, attachment_messages = await run_attachment_context(
+                self.db,
+                self.config,
+                run_id,
+            )
+            if attachment_items:
+                loaded_context.items.extend(attachment_items)
+                loaded_context.prompt_messages.extend(attachment_messages)
             if loaded_context.clock_refresh:
                 await self._emit_run_event(
                     conversation_id=conversation_id,

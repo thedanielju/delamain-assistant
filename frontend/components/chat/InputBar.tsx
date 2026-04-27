@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Send, Lock, Paperclip, X } from 'lucide-react'
+import { Check, FileText, Send, Lock, Paperclip, RefreshCw, X } from 'lucide-react'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { DirectActionsBar } from './DirectActionsBar'
-import type { DirectAction } from '@/lib/types'
+import type { DirectAction, PromptAttachment, UploadRepresentation } from '@/lib/types'
 
 function TogglePill({
   label,
@@ -41,10 +42,15 @@ function TogglePill({
   )
 }
 
-interface AttachedFile {
+interface ComposerAttachment {
   id: string
   name: string
-  size: number
+  size: number | null
+  uploadId?: string
+  status: 'uploading' | 'ready' | 'failed'
+  include: boolean
+  representation: UploadRepresentation
+  error?: string
 }
 
 function formatBytes(bytes: number) {
@@ -54,7 +60,7 @@ function formatBytes(bytes: number) {
 }
 
 interface InputBarProps {
-  onSend: (message: string, attachments?: AttachedFile[]) => void
+  onSend: (message: string, attachments?: PromptAttachment[]) => boolean | Promise<boolean>
   blankSlate: boolean
   incognito: boolean
   sensitive: boolean
@@ -81,7 +87,7 @@ export function InputBar({
   conversationId,
 }: InputBarProps) {
   const [value, setValue] = useState('')
-  const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -93,15 +99,61 @@ export function InputBar({
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }, [])
 
+  const uploadOneFile = useCallback(async (file: File) => {
+    const localId = Math.random().toString(36).slice(2)
+    setAttachments((prev) => [
+      ...prev,
+      {
+        id: localId,
+        name: file.name,
+        size: file.size,
+        status: 'uploading',
+        include: true,
+        representation: 'rich',
+      },
+    ])
+
+    try {
+      const uploaded = await api.uploadFile(file)
+      setAttachments((prev) =>
+        prev.map((item) =>
+          item.id === localId
+            ? {
+                ...item,
+                id: uploaded.id,
+                uploadId: uploaded.id,
+                name:
+                  uploaded.filename ??
+                  uploaded.original_filename ??
+                  uploaded.name ??
+                  item.name,
+                size: uploaded.size ?? uploaded.byte_count ?? item.size,
+                status: 'ready',
+              }
+            : item
+        )
+      )
+    } catch (err) {
+      setAttachments((prev) =>
+        prev.map((item) =>
+          item.id === localId
+            ? {
+                ...item,
+                status: 'failed',
+                error: err instanceof Error ? err.message : 'Upload failed',
+              }
+            : item
+        )
+      )
+    }
+  }, [])
+
   const addFiles = useCallback((fileList: FileList | null) => {
     if (!fileList) return
-    const next: AttachedFile[] = Array.from(fileList).map((f) => ({
-      id: Math.random().toString(36).slice(2),
-      name: f.name,
-      size: f.size,
-    }))
-    setAttachments((prev) => [...prev, ...next])
-  }, [])
+    for (const file of Array.from(fileList)) {
+      void uploadOneFile(file)
+    }
+  }, [uploadOneFile])
 
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -139,10 +191,19 @@ export function InputBar({
     [addFiles]
   )
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const trimmed = value.trim()
     if (!trimmed) return
-    onSend(trimmed, attachments)
+    const promptAttachments = attachments.flatMap((item): PromptAttachment[] => {
+      if (!item.uploadId || item.status !== 'ready') return []
+      return [{
+        upload_id: item.uploadId,
+        include: item.include,
+        representation: item.representation,
+      }]
+    })
+    const sent = await onSend(trimmed, promptAttachments)
+    if (!sent) return
     setValue('')
     setAttachments([])
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -162,7 +223,27 @@ export function InputBar({
     setAttachments((prev) => prev.filter((a) => a.id !== id))
   }, [])
 
-  const canSend = value.trim().length > 0
+  const toggleAttachmentInclude = useCallback((id: string) => {
+    setAttachments((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, include: !item.include } : item))
+    )
+  }, [])
+
+  const toggleAttachmentRepresentation = useCallback((id: string) => {
+    setAttachments((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              representation: item.representation === 'rich' ? 'converted' : 'rich',
+            }
+          : item
+      )
+    )
+  }, [])
+
+  const canSend =
+    value.trim().length > 0 && !attachments.some((item) => item.status === 'uploading')
 
   useEffect(() => {
     if (!onDraftChange) return
@@ -234,11 +315,55 @@ export function InputBar({
           {attachments.map((a) => (
             <span
               key={a.id}
-              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#141414] border border-white/[0.08] text-[10px] font-mono text-[#888888]"
+              className={cn(
+                'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#141414] border text-[10px] font-mono',
+                a.status === 'failed'
+                  ? 'border-[var(--accent-pink)]/30 text-[var(--accent-pink)]'
+                  : 'border-white/[0.08] text-[#888888]'
+              )}
             >
-              <Paperclip size={9} />
+              {a.status === 'uploading' ? (
+                <RefreshCw size={9} className="animate-spin" />
+              ) : a.status === 'ready' ? (
+                <Check size={9} className="text-[var(--accent-green)]" />
+              ) : (
+                <Paperclip size={9} />
+              )}
               <span className="truncate max-w-[120px]">{a.name}</span>
-              <span className="text-[#444444]">{formatBytes(a.size)}</span>
+              <span className="text-[#444444]">{a.size == null ? 'size?' : formatBytes(a.size)}</span>
+              {a.status === 'ready' && (
+                <>
+                  <button
+                    onClick={() => toggleAttachmentInclude(a.id)}
+                    className={cn(
+                      'px-1 py-px rounded border transition-colors',
+                      a.include
+                        ? 'border-[var(--accent-green)]/40 text-[var(--accent-green)]'
+                        : 'border-white/[0.08] text-[#555555]'
+                    )}
+                    aria-pressed={a.include}
+                    aria-label={`${a.include ? 'Exclude' : 'Include'} ${a.name}`}
+                    title={a.include ? 'Included in prompt' : 'Excluded from prompt'}
+                  >
+                    {a.include ? 'in' : 'out'}
+                  </button>
+                  <button
+                    onClick={() => toggleAttachmentRepresentation(a.id)}
+                    className="inline-flex items-center gap-1 px-1 py-px rounded border border-white/[0.08] text-[#777777] hover:text-white hover:border-white/[0.16] transition-colors"
+                    aria-label={`Use ${a.representation === 'rich' ? 'converted' : 'rich'} representation for ${a.name}`}
+                    title="Toggle rich/converted representation"
+                  >
+                    <FileText size={8} />
+                    {a.representation}
+                  </button>
+                </>
+              )}
+              {a.status === 'uploading' && <span className="text-[#444444]">uploading</span>}
+              {a.status === 'failed' && (
+                <span className="max-w-[140px] truncate text-[var(--accent-pink)]">
+                  {a.error ?? 'failed'}
+                </span>
+              )}
               <button
                 onClick={() => removeAttachment(a.id)}
                 className="text-[#555555] hover:text-white transition-colors ml-0.5"

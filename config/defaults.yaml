@@ -33,3 +33,8 @@ auth:
 maintenance:
   action_output_retention_days: 30
   context_backup_retention_days: 30
+uploads:
+  storage_path: "/home/danielju/.local/share/delamain/uploads"
+  max_size_bytes: 104857600
+  preview_char_limit: 12000
+  context_char_limit: 60000

@@ -16,6 +16,7 @@ from delamain_backend.config import (
     RuntimeConfig,
     ServerConfig,
     ToolsConfig,
+    UploadsConfig,
 )
 
 
@@ -77,6 +78,12 @@ def test_config(tmp_path: Path) -> AppConfig:
         maintenance=MaintenanceConfig(
             action_output_retention_days=30,
             context_backup_retention_days=30,
+        ),
+        uploads=UploadsConfig(
+            storage_path=tmp_path / "uploads",
+            max_size_bytes=100 * 1024 * 1024,
+            preview_char_limit=12000,
+            context_char_limit=60000,
         ),
     )
 

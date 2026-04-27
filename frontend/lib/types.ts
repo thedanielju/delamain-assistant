@@ -205,7 +205,71 @@ export interface ThemeConfig {
 
 // ── Right panel ───────────────────────────────────────────────────────────────
 
-export type RightPanelId = 'settings' | 'health' | 'workers' | 'usage' | 'syncthing' | 'vault' | null
+export type RightPanelId =
+  | 'settings'
+  | 'health'
+  | 'workers'
+  | 'usage'
+  | 'syncthing'
+  | 'vault'
+  | 'uploads'
+  | null
+
+// ── Upload intake ───────────────────────────────────────────────────────────
+
+export type UploadStatus =
+  | 'uploading'
+  | 'pending'
+  | 'uploaded'
+  | 'preview_ready'
+  | 'converted'
+  | 'promoted'
+  | 'expired'
+  | 'failed'
+  | string
+
+export type UploadRepresentation = 'rich' | 'converted'
+
+export type UploadPromotionCategory = 'reference' | 'syllabi'
+
+export interface UploadItem {
+  id: string
+  name: string
+  size: number | null
+  contentType?: string | null
+  status: UploadStatus
+  previewStatus?: UploadStatus | null
+  conversionStatus?: UploadStatus | null
+  createdAt?: string
+  updatedAt?: string
+  expiresAt?: string | null
+  errorMessage?: string | null
+  representation?: UploadRepresentation | string | null
+  category?: UploadPromotionCategory | string | null
+  promotedPath?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface UploadPreview {
+  uploadId?: string
+  status?: UploadStatus
+  filename?: string
+  contentType?: string | null
+  size?: number | null
+  textPreview?: string | null
+  markdownPreview?: string | null
+  extractedText?: string | null
+  tokenEstimate?: number | null
+  pageCount?: number | null
+  metadata?: Record<string, unknown>
+  errorMessage?: string | null
+}
+
+export interface PromptAttachment {
+  upload_id: string
+  include: boolean
+  representation: UploadRepresentation
+}
 
 // ── Vault index ───────────────────────────────────────────────────────────────
 // Shape matches the active vault graph and context endpoints.

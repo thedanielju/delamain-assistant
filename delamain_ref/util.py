@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_INGEST_EXTENSIONS = {".pdf", ".docx", ".rtf", ".odt"}
-EXCLUDED_INGEST_EXTENSIONS = {".txt", ".md"}
+SUPPORTED_INGEST_EXTENSIONS = {".pdf", ".docx", ".rtf", ".odt", ".txt", ".md"}
+EXCLUDED_INGEST_EXTENSIONS = set()
 
 
 def utc_now_iso() -> str:

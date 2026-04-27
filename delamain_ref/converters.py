@@ -39,6 +39,15 @@ def convert_rich_document(source: Path, figures_dir: Path) -> ConversionResult:
     extension = source.suffix.lower()
     figures_dir.mkdir(parents=True, exist_ok=True)
 
+    if extension in {".txt", ".md"}:
+        return ConversionResult(
+            ok=True,
+            status="fresh",
+            converter="direct_text",
+            markdown=source.read_text(encoding="utf-8", errors="replace"),
+            extraction_report={"kind": "direct_text", "generated_at": utc_now_iso()},
+        )
+
     if extension in {".docx", ".rtf", ".odt"}:
         docling_result = _try_docling(source, figures_dir)
         if docling_result and docling_result.ok:

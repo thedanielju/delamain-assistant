@@ -307,3 +307,55 @@ MIGRATIONS.append(
         """,
     )
 )
+
+MIGRATIONS.append(
+    (
+        7,
+        """
+        CREATE TABLE IF NOT EXISTS uploads (
+            id TEXT PRIMARY KEY,
+            original_filename TEXT NOT NULL,
+            extension TEXT NOT NULL,
+            mime_type TEXT,
+            byte_count INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            extracted_path TEXT,
+            converted_path TEXT,
+            conversion_status TEXT NOT NULL DEFAULT 'pending',
+            converter TEXT,
+            conversion_error TEXT,
+            promoted_category TEXT,
+            promoted_bundle_id TEXT,
+            promoted_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_uploads_created_at
+            ON uploads(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_uploads_sha256
+            ON uploads(sha256);
+
+        CREATE TABLE IF NOT EXISTS run_upload_attachments (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            upload_id TEXT REFERENCES uploads(id) ON DELETE SET NULL,
+            original_filename TEXT NOT NULL,
+            representation TEXT NOT NULL,
+            included INTEGER NOT NULL DEFAULT 1,
+            byte_count INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            content_path TEXT,
+            content_sha256 TEXT,
+            context_char_count INTEGER,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_run_upload_attachments_run
+            ON run_upload_attachments(run_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_run_upload_attachments_upload
+            ON run_upload_attachments(upload_id);
+        """,
+    )
+)
